@@ -17,7 +17,7 @@
     "db:migrate": "pnpm --filter @kael/storage db:migrate",
     "db:studio": "pnpm --filter @kael/storage db:studio",
     "db:generate": "pnpm --filter @kael/storage db:generate",
-    "worker:dev": "pnpm --filter @kael/api worker:dev",
+    "sentinel": "pnpm --filter @kael/cli sentinel",
     "changeset": "changeset",
     "version-packages": "changeset version",
     "release": "turbo run build --filter=./packages/* && changeset publish"

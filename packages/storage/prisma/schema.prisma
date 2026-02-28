@@ -1,0 +1,196 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Source of information that can be ingested
+model Source {
+  id              String    @id @default(cuid())
+  kind            String    // rss, web, github, manual
+  name            String
+  baseUrl         String
+  reliabilityHint Float     @default(0.5)
+  enabled         Boolean   @default(true)
+  policy          Json?     // Source policy for autonomous governance
+  createdAt       DateTime  @default(now())
+
+  // Relations
+  rawItems        RawItem[]
+
+  @@index([enabled])
+}
+
+// Raw content item ingested from a source
+model RawItem {
+  id            String      @id @default(cuid())
+  sourceId      String
+  url           String
+  title         String
+  bodyText      String      @db.Text
+  contentType   String      // rss, html, pdf, text
+  language      String?     // ISO 639-1 (e.g. 'en', 'es')
+  author        String?
+  publishedAt   DateTime?
+  fetchedAt     DateTime
+  hash          String      @unique
+  meta          Json        @default("{}")
+  createdAt     DateTime    @default(now())
+
+  // Relations
+  source        Source      @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  claims        Claim[]
+  evidence      Evidence[]
+  clusters      ClusterRawItem[]
+
+  @@index([hash])
+  @@index([publishedAt])
+  @@index([fetchedAt])
+}
+
+// Factual claim extracted from a raw item
+model Claim {
+  id            String      @id @default(cuid())
+  rawItemId     String
+  text          String      @db.Text
+  subject       String?
+  predicate     String?
+  object        String?
+  extractedAt   DateTime    @default(now())
+  createdAt     DateTime    @default(now())
+
+  // Relations
+  rawItem       RawItem     @relation(fields: [rawItemId], references: [id], onDelete: Cascade)
+  evidence      Evidence[]
+  clusters      ClusterClaim[]
+}
+
+// Evidence linking a claim back to source material
+model Evidence {
+  id            String      @id @default(cuid())
+  claimId       String
+  rawItemId     String
+  quote         String      @db.Text
+  offsetStart   Int?
+  offsetEnd     Int?
+  url           String
+  capturedAt    DateTime    @default(now())
+  createdAt     DateTime    @default(now())
+
+  // Relations
+  claim         Claim       @relation(fields: [claimId], references: [id], onDelete: Cascade)
+  rawItem       RawItem     @relation(fields: [rawItemId], references: [id], onDelete: Cascade)
+
+  @@index([claimId])
+  @@index([rawItemId])
+}
+
+// Cluster of related claims about a topic
+model Cluster {
+  id              String          @id @default(cuid())
+  topic           String
+  canonicalClaim  String?         @db.Text
+  updatedAt       DateTime        @default(now()) @updatedAt
+  createdAt       DateTime        @default(now())
+
+  // Relations
+  claims          ClusterClaim[]
+  rawItems        ClusterRawItem[]
+  signals         Signal[]
+
+  @@index([updatedAt])
+}
+
+// Join table: Cluster <-> Claim (many-to-many)
+model ClusterClaim {
+  id          String    @id @default(cuid())
+  clusterId   String
+  claimId     String
+  addedAt     DateTime  @default(now())
+
+  // Relations
+  cluster     Cluster   @relation(fields: [clusterId], references: [id], onDelete: Cascade)
+  claim       Claim     @relation(fields: [claimId], references: [id], onDelete: Cascade)
+
+  @@unique([clusterId, claimId])
+  @@index([clusterId])
+  @@index([claimId])
+}
+
+// Join table: Cluster <-> RawItem (many-to-many)
+model ClusterRawItem {
+  id          String    @id @default(cuid())
+  clusterId   String
+  rawItemId   String
+  addedAt     DateTime  @default(now())
+
+  // Relations
+  cluster     Cluster   @relation(fields: [clusterId], references: [id], onDelete: Cascade)
+  rawItem     RawItem   @relation(fields: [rawItemId], references: [id], onDelete: Cascade)
+
+  @@unique([clusterId, rawItemId])
+  @@index([clusterId])
+  @@index([rawItemId])
+}
+
+// Signal - verified/assessed civic intelligence ready for publication
+model Signal {
+  id                String          @id @default(cuid())
+  clusterId         String
+  title             String
+  summary           String          @db.Text
+  severity          Int             @default(0) // 0-5
+  confidence        Float           @default(0)
+  tags              String[]        @default([])
+  status            String          @default("draft") // draft, active, retracted
+  provenance        String          @default("heuristic") // heuristic, llm, hybrid
+  attention         String          @default("normal") // watch, normal, urgent
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @default(now()) @updatedAt
+
+  // Relations
+  cluster           Cluster         @relation(fields: [clusterId], references: [id], onDelete: Cascade)
+  reasoningTrail    ReasoningTrail?
+
+  @@index([clusterId])
+  @@index([createdAt])
+  @@index([status])
+  @@index([attention])
+}
+
+// Audit trail showing how a signal was derived
+model ReasoningTrail {
+  id            String      @id @default(cuid())
+  signalId      String      @unique
+  steps         Json        // Array of reasoning steps
+  modelInfo     Json?       // Model provider info
+  createdAt     DateTime    @default(now())
+
+  // Relations
+  signal        Signal      @relation(fields: [signalId], references: [id], onDelete: Cascade)
+}
+
+// Daily Digest - compiled summary of signals for publication
+model Digest {
+  id                String      @id @default(cuid())
+  periodStart       DateTime    // Start of digest period (e.g., 24h ago)
+  periodEnd         DateTime    // End of digest period (now)
+  title             String      // e.g., "Daily Digest - 2024-01-15"
+  content           String      @db.Text // Markdown content
+  summary           String      @db.Text // Plain text summary
+  signalIds         String[]    // References to included signals
+  signalCount       Int         // Number of signals included
+  kaelNotes         String      @db.Text // Uncertainty + watch next
+  meta              Json        @default("{}") // Additional metadata
+  published         Boolean     @default(false)
+  publishedAt       DateTime?
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @default(now()) @updatedAt
+
+  @@index([periodEnd])
+  @@index([published])
+  @@index([createdAt])
+}
