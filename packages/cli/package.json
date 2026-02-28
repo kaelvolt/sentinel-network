@@ -1,0 +1,34 @@
+{
+  "name": "@kael/cli",
+  "version": "0.0.0",
+  "type": "module",
+  "bin": {
+    "kael": "./dist/index.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "clean": "rm -rf dist",
+    "lint": "eslint src --ext .ts",
+    "lint:fix": "eslint src --ext .ts --fix",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@kael/core": "workspace:*",
+    "@kael/shared": "workspace:*",
+    "@kael/storage": "workspace:*",
+    "commander": "^12.0.0",
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "@kael/tsconfig": "workspace:*",
+    "@types/node": "^20.10.5",
+    "typescript": "^5.4.5"
+  }
+}

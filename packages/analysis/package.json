@@ -1,0 +1,27 @@
+{
+  "name": "@kael/analysis",
+  "version": "0.0.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "clean": "rm -rf dist",
+    "lint": "eslint src --ext .ts",
+    "lint:fix": "eslint src --ext .ts --fix",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@kael/core": "workspace:*",
+    "@kael/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "@kael/tsconfig": "workspace:*",
+    "typescript": "^5.4.5"
+  }
+}
