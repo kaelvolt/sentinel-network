@@ -41,3 +41,7 @@ coverage/
 
 # Docker volumes
 docker-data/
+
+# Kael agent files (local only)
+packages/cli/src/kael-*.ts
+
