@@ -1,7 +1,17 @@
 // Core functionality for Sentinel Network
 
+const axios = require('axios');
+
 function monitorSources() {
     console.log('Monitoring sources...');
+    // Example: Fetch data from a public API
+    axios.get('https://api.example.com/data')
+        .then(response => {
+            console.log('Data fetched:', response.data);
+        })
+        .catch(error => {
+            console.error('Error fetching data:', error);
+        });
 }
 
 function detectSignals() {
