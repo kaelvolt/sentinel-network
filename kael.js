@@ -170,6 +170,78 @@ async function runCmd(command, timeout = 60000) {
   }
 }
 
+function parsePorcelainPath(line) {
+  const raw = line.slice(3).trim();
+  if (raw.includes(" -> ")) {
+    return raw.split(" -> ").pop()?.trim() || "";
+  }
+  return raw;
+}
+
+async function getChangedFiles() {
+  const out = await runCmd("git status --porcelain", 10000);
+  const files = out
+    .split(/\r?\n/)
+    .map((l) => l.trimEnd())
+    .filter(Boolean)
+    .map(parsePorcelainPath)
+    .filter(Boolean);
+  return [...new Set(files)];
+}
+
+function detectScopeFromFile(file) {
+  if (file.startsWith("packages/analysis/")) return "analysis";
+  if (file.startsWith("packages/shared/")) return "shared";
+  if (file.startsWith("packages/core/")) return "core";
+  if (file.startsWith("packages/sources/")) return "sources";
+  if (file.startsWith("packages/storage/")) return "storage";
+  if (file.startsWith("packages/cli/")) return "cli";
+  if (file.startsWith("packages/notifier/")) return "notifier";
+  if (file.startsWith("apps/api/")) return "api";
+  if (file.startsWith("apps/web/")) return "web";
+  if (file === "kael.js") return "agent";
+  return "repo";
+}
+
+function inferTypeFromTask(taskName) {
+  if (taskName === "buildSentinelMilestone") return "feat";
+  if (taskName === "fixTypeErrors") return "fix";
+  if (taskName === "buildIngestion" || taskName === "buildAnalysis") return "feat";
+  if (taskName === "assessState" || taskName === "testAndCommit") return "chore";
+  return "chore";
+}
+
+function buildCommitSubject(taskName, files) {
+  if (files.includes("packages/analysis/src/score.ts")) {
+    return "refine signal quality scoring";
+  }
+  if (files.includes("packages/shared/src/types.ts")) {
+    return "extend shared signal feed contracts";
+  }
+  if (files.includes("packages/core/src/orchestrator.ts")) {
+    return "improve source prioritization in orchestrator";
+  }
+  if (files.length === 1) {
+    const parts = files[0].split("/");
+    const leaf = parts[parts.length - 1].replace(/\.[^.]+$/, "");
+    return `update ${leaf}`;
+  }
+  if (taskName === "buildSentinelMilestone") {
+    return "deliver sentinel milestone updates";
+  }
+  return `update ${files.length} project files`;
+}
+
+async function buildCommitMessage(taskName) {
+  const files = await getChangedFiles();
+  if (files.length === 0) return null;
+  const type = inferTypeFromTask(taskName);
+  const scopes = [...new Set(files.map(detectScopeFromFile))];
+  const scope = scopes.length === 1 ? scopes[0] : "sentinel";
+  const subject = buildCommitSubject(taskName, files);
+  return `${type}(${scope}): ${subject}`;
+}
+
 async function testCode() {
   const result = await runCmd("cd packages/core && npx tsc --noEmit 2>&1", 120000);
   const errors = (result.match(/error TS/g) || []).length;
@@ -700,7 +772,12 @@ async function testAndCommit() {
     console.log("   No changes");
     return;
   }
-  const committed = await commit(`Kael: ${stats.fixes} fixes`);
+  const message = await buildCommitMessage("testAndCommit");
+  if (!message) {
+    console.log("   No commit message context (no changed files)");
+    return;
+  }
+  const committed = await commit(message);
   if (committed) {
     stats.changes = 0;
     stats.fixes = 0;
@@ -715,11 +792,9 @@ async function autoCommitPerUpdate(taskName) {
   if (!timeDue && !meaningfulBatch) return;
 
   console.log(`   🔁 Checkpoint commit (${meaningfulBatch ? "batch" : "time-based"})...`);
-  const backlog = await ensureBacklog();
-  const completed = backlog.milestones.filter((m) => m.status === "completed").length;
-  const committed = await commit(
-    `Kael checkpoint: ${taskName} | fixes=${stats.fixes} changes=${stats.changes} milestones=${completed}/${backlog.milestones.length}`
-  );
+  const message = await buildCommitMessage(taskName);
+  if (!message) return;
+  const committed = await commit(message);
   if (committed) {
     stats.changes = 0;
     stats.fixes = 0;
