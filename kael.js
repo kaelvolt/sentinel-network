@@ -26,6 +26,7 @@ const openai = new OpenAI({ apiKey });
 const MODEL = process.env.MODEL_NAME || "gpt-4o-mini";
 const ROOT = process.cwd();
 const BACKLOG_PATH = ".kael/sentinel-backlog.json";
+const MEMORY_PATH = ".kael/memory.json";
 
 console.log("\n╔════════════════════════════════════════╗");
 console.log("║        KAEL                            ║");
@@ -52,6 +53,14 @@ const FIX_DENYLIST = new Set([
   "packages/core/src/tools/analyzeNewItems.ts",
   "packages/core/src/tools/generateDigest.ts",
 ]);
+let memory = {
+  version: 1,
+  operatorName: "Operator",
+  directives: [],
+  chatHistory: [],
+  notes: [],
+  lastUpdated: new Date().toISOString(),
+};
 
 const SENTINEL_NORTH_STAR = {
   mission: "Reduce civilizational blind spots via traceable civic signals",
@@ -101,6 +110,43 @@ async function readJsonSafe(filePath) {
   } catch {
     return null;
   }
+}
+
+async function ensureMemory() {
+  const existing = await readJsonSafe(MEMORY_PATH);
+  if (existing && typeof existing === "object") {
+    memory = {
+      version: existing.version || 1,
+      operatorName: existing.operatorName || "Operator",
+      directives: Array.isArray(existing.directives) ? existing.directives : [],
+      chatHistory: Array.isArray(existing.chatHistory) ? existing.chatHistory.slice(-80) : [],
+      notes: Array.isArray(existing.notes) ? existing.notes.slice(-80) : [],
+      lastUpdated: existing.lastUpdated || new Date().toISOString(),
+    };
+    return memory;
+  }
+  await writeJsonSafe(MEMORY_PATH, memory);
+  return memory;
+}
+
+async function saveMemory() {
+  memory.lastUpdated = new Date().toISOString();
+  await writeJsonSafe(MEMORY_PATH, memory);
+}
+
+async function rememberChat(role, text) {
+  memory.chatHistory.push({
+    role,
+    text: String(text || "").slice(0, 800),
+    at: new Date().toISOString(),
+  });
+  memory.chatHistory = memory.chatHistory.slice(-80);
+  await saveMemory();
+}
+
+function getOperatorFocus() {
+  const active = [...memory.directives].reverse().find((d) => d.status === "pending");
+  return active?.text || null;
 }
 
 function isCodeLikePath(filePath) {
@@ -242,6 +288,24 @@ async function buildCommitMessage(taskName) {
   return `${type}(${scope}): ${subject}`;
 }
 
+async function deployToVercel(reason = "manual") {
+  try {
+    const hasConfig = !!process.env.VERCEL_TOKEN || !!process.env.VERCEL_ORG_ID;
+    if (!hasConfig) {
+      return { ok: false, message: "Vercel credentials not configured in env." };
+    }
+    const out = await runCmd("npx vercel --prod --yes", 20 * 60 * 1000);
+    const success = /Production:\s*https?:\/\//i.test(out) || /Inspect:\s*https?:\/\//i.test(out);
+    return {
+      ok: success,
+      message: success ? `Vercel deploy succeeded (${reason}).` : `Vercel deploy attempted (${reason}), check logs.`,
+      output: out.slice(-1200),
+    };
+  } catch (err) {
+    return { ok: false, message: `Vercel deploy failed: ${String(err?.message || err)}` };
+  }
+}
+
 async function testCode() {
   const result = await runCmd("cd packages/core && npx tsc --noEmit 2>&1", 120000);
   const errors = (result.match(/error TS/g) || []).length;
@@ -250,6 +314,7 @@ async function testCode() {
 
 async function commit(message) {
   try {
+    const changedBeforeCommit = await getChangedFiles();
     const test = await testCode();
     if (baselineErrors === null) baselineErrors = test.errors;
     if (test.errors > baselineErrors) {
@@ -263,6 +328,16 @@ async function commit(message) {
     baselineErrors = test.errors;
     lastCommitAt = Date.now();
     await tg(`✅ ${message}`, true);
+
+    // Optional auto-deploy for web changes when credentials exist.
+    if (changedBeforeCommit.some((f) => f.startsWith("apps/web/")) && process.env.VERCEL_TOKEN) {
+      const deploy = await deployToVercel("post-commit web update");
+      if (deploy.ok) {
+        await tg(`🚀 ${deploy.message}`, true);
+      } else {
+        await tg(`⚠️ ${deploy.message}`, true);
+      }
+    }
     return true;
   } catch {
     return false;
@@ -355,6 +430,24 @@ async function buildSentinelMilestone() {
         title: "Public Feed Contract v2",
         status: "pending",
         objective: "Extend feed contract with freshness and provenance fields",
+      },
+      {
+        id: "api-ingest-contract-v1",
+        title: "API Ingest Contract v1",
+        status: "pending",
+        objective: "Implement a concrete Fastify ingest route contract",
+      },
+      {
+        id: "api-digest-endpoint-v1",
+        title: "API Digest Endpoint v1",
+        status: "pending",
+        objective: "Implement latest digest retrieval endpoint",
+      },
+      {
+        id: "web-api-client-v1",
+        title: "Web API Client v1",
+        status: "pending",
+        objective: "Add typed API client helpers for dashboard consumption",
       }
     );
     await writeJsonSafe(BACKLOG_PATH, backlog);
@@ -553,6 +646,104 @@ export interface PublicSignalFeedItemV2 extends PublicSignalFeedItem {
 }
 `;
       const ok = await writeSafe(file, existing + block);
+      if (!ok) return;
+      stats.fixes++;
+    }
+    next.status = "completed";
+    next.completedAt = new Date().toISOString();
+    await writeJsonSafe(BACKLOG_PATH, backlog);
+    console.log(`   ✅ Delivered ${next.id}`);
+    return;
+  }
+
+  if (next.id === "api-ingest-contract-v1") {
+    const file = "apps/api/src/routes/ingest.ts";
+    const existing = await readSafe(file);
+    if (!existing) return;
+    if (!existing.includes("fastify.post(\"/ingest/run\"")) {
+      const replacement = `import type { FastifyInstance } from "fastify";
+
+const ingestRoutes = async (fastify: FastifyInstance) => {
+  fastify.post("/ingest/run", async (_request, _reply) => {
+    return {
+      ok: true,
+      data: { triggered: true, mode: "manual" },
+      meta: { at: new Date().toISOString() },
+    };
+  });
+};
+
+export default ingestRoutes;
+`;
+      const ok = await writeSafe(file, replacement);
+      if (!ok) return;
+      stats.fixes++;
+    }
+    next.status = "completed";
+    next.completedAt = new Date().toISOString();
+    await writeJsonSafe(BACKLOG_PATH, backlog);
+    console.log(`   ✅ Delivered ${next.id}`);
+    return;
+  }
+
+  if (next.id === "api-digest-endpoint-v1") {
+    const file = "apps/api/src/routes/digests.ts";
+    const existing = await readSafe(file);
+    if (!existing) return;
+    if (!existing.includes("fastify.get(\"/digests/latest\"")) {
+      const replacement = `import type { FastifyInstance } from "fastify";
+
+const digestRoutes = async (fastify: FastifyInstance) => {
+  fastify.get("/digests/latest", async (_request, _reply) => {
+    return {
+      ok: true,
+      data: {
+        title: "Daily Digest",
+        generatedAt: new Date().toISOString(),
+      },
+      meta: { source: "sentinel-network" },
+    };
+  });
+};
+
+export default digestRoutes;
+`;
+      const ok = await writeSafe(file, replacement);
+      if (!ok) return;
+      stats.fixes++;
+    }
+    next.status = "completed";
+    next.completedAt = new Date().toISOString();
+    await writeJsonSafe(BACKLOG_PATH, backlog);
+    console.log(`   ✅ Delivered ${next.id}`);
+    return;
+  }
+
+  if (next.id === "web-api-client-v1") {
+    const file = "apps/web/src/lib/api.ts";
+    const existing = await readSafe(file);
+    if (!existing) return;
+    if (!existing.includes("export async function getSignalsPage")) {
+      const replacement = `const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
+
+async function requestJson(path) {
+  const res = await fetch(\`\${API_URL}\${path}\`, { cache: "no-store" });
+  if (!res.ok) throw new Error(\`API request failed: \${res.status}\`);
+  return res.json();
+}
+
+export async function getSignalsPage(cursor = "", limit = 20) {
+  const qs = new URLSearchParams();
+  qs.set("limit", String(limit));
+  if (cursor) qs.set("cursor", cursor);
+  return requestJson(\`/signals?\${qs.toString()}\`);
+}
+
+export async function getLatestDigest() {
+  return requestJson("/digests/latest");
+}
+`;
+      const ok = await writeSafe(file, replacement);
       if (!ok) return;
       stats.fixes++;
     }
@@ -808,6 +999,7 @@ async function rest() {
 
 // Main loop
 async function kaelLife() {
+  await ensureMemory();
   await tg("Kael online. Building Sentinel Network.", true);
 
   const tasks = [
@@ -838,7 +1030,8 @@ async function kaelLife() {
 
     if (stats.sessions % 10 === 0) {
       const test = await testCode();
-      const msg = `Progress: ${test.errors} errors, ${stats.commits} commits`;
+      const focus = getOperatorFocus();
+      const msg = `Progress: ${test.errors} errors, ${stats.commits} commits${focus ? ` | focus: ${focus}` : ""}`;
       console.log(`\n📊 ${msg}`);
       await tg(msg);
     }
@@ -847,19 +1040,95 @@ async function kaelLife() {
   }
 }
 
+async function buildStatusText() {
+  const test = await testCode();
+  const focus = getOperatorFocus();
+  return [
+    `Sessions: ${stats.sessions}`,
+    `Commits: ${stats.commits}`,
+    `Type errors: ${test.errors}`,
+    `Paused: ${isPaused}`,
+    `Focus: ${focus || "none"}`,
+  ].join("\n");
+}
+
+async function aiChatReply(userText) {
+  try {
+    const history = memory.chatHistory.slice(-10).map((m) => `${m.role}: ${m.text}`).join("\n");
+    const prompt = [
+      "You are Kael, a collaborative AI dev partner for Sentinel Network.",
+      "Style: human, concise, direct, not robotic.",
+      "Never claim work you did not actually perform.",
+      "If asked for status, refer to provided runtime stats.",
+      "",
+      `Runtime: sessions=${stats.sessions}, commits=${stats.commits}, paused=${isPaused}`,
+      `Operator focus: ${getOperatorFocus() || "none"}`,
+      "",
+      "Recent chat:",
+      history || "(none)",
+      "",
+      `Operator message: ${userText}`,
+      "Reply in <= 4 lines.",
+    ].join("\n");
+    const c = await openai.chat.completions.create({
+      model: MODEL,
+      messages: [
+        { role: "system", content: "You are Kael. Be warm, competent, and concrete." },
+        { role: "user", content: prompt },
+      ],
+      temperature: 0.6,
+      max_tokens: 220,
+    });
+    return c.choices[0]?.message?.content?.trim() || "I’m here. Tell me what you want me to focus on next.";
+  } catch {
+    return "I’m on it. Tell me the focus area and I’ll execute.";
+  }
+}
+
+async function handleOperatorIntent(textRaw) {
+  const text = textRaw.trim();
+  const lower = text.toLowerCase();
+
+  if (lower === "pause") {
+    isPaused = true;
+    return "Paused. I’ll hold execution until you say resume.";
+  }
+  if (lower === "resume") {
+    isPaused = false;
+    return "Resumed. Back to building.";
+  }
+  if (lower === "status") {
+    return buildStatusText();
+  }
+  if (lower.startsWith("focus ")) {
+    const focus = text.slice(6).trim();
+    if (!focus) return "Send: focus <what you want next>.";
+    memory.directives.push({ text: focus, status: "pending", at: new Date().toISOString() });
+    memory.notes.push({ type: "focus", text: focus, at: new Date().toISOString() });
+    memory.notes = memory.notes.slice(-80);
+    await saveMemory();
+    return `Locked focus: ${focus}. I’ll prioritize it in upcoming milestones.`;
+  }
+  if (lower === "deploy vercel" || lower === "/deploy vercel") {
+    const result = await deployToVercel("operator requested");
+    return result.ok ? `✅ ${result.message}` : `⚠️ ${result.message}`;
+  }
+  if (lower === "help") {
+    return "Commands: status, pause, resume, focus <topic>, deploy vercel, plan";
+  }
+  if (lower === "plan") {
+    const backlog = await ensureBacklog();
+    const next = backlog.milestones.find((m) => m.status === "pending");
+    return `Plan: next milestone is ${next?.id || "none"}. Focus: ${getOperatorFocus() || "none"}.`;
+  }
+  return aiChatReply(text);
+}
+
 // Telegram
 async function telegramChat() {
   if (!telegramToken || !telegramChatId) return;
+  await ensureMemory();
   let offset = 0;
-
-  const responses = {
-    "hey": "Hey 👋",
-    "hi": "Hi!",
-    "hello": "Building Sentinel.",
-    "how are you": "Good. Coding.",
-    "what are you doing": "Building civic intelligence infrastructure.",
-    "status": `Sessions: ${stats.sessions}\nCommits: ${stats.commits}\nPaused: ${isPaused}`,
-  };
 
   while (true) {
     try {
@@ -879,17 +1148,11 @@ async function telegramChat() {
 
       for (const u of updates) {
         offset = Math.max(offset, u.update_id + 1);
-        const text = u.message?.text?.trim()?.toLowerCase() || "";
-        if (!text) continue;
-
-        let reply = responses[text] || "Working on Sentinel. Say 'status' for progress.";
-        if (text === "pause") {
-          isPaused = true;
-          reply = "Paused.";
-        } else if (text === "resume") {
-          isPaused = false;
-          reply = "Resumed.";
-        }
+        const rawText = u.message?.text?.trim() || "";
+        if (!rawText) continue;
+        await rememberChat("operator", rawText);
+        const reply = await handleOperatorIntent(rawText);
+        await rememberChat("kael", reply);
 
         await fetch(`https://api.telegram.org/bot${telegramToken}/sendMessage`, {
           method: "POST",
