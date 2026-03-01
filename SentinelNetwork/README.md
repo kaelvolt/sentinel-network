@@ -12,3 +12,21 @@ Sentinel Network is an autonomous civic intelligence platform that monitors sour
 ## Getting Started
 
 To get started, run `npm install` to install dependencies.
+
+## Usage
+
+To run the application, execute:
+```
+npm start
+```
+
+## Features
+- Source Monitoring
+- Signal Detection
+- Claim Clustering
+- Alert Generation
+- User Interface
+
+## Contribution Guidelines
+
+We welcome contributions! Please fork the repository and submit a pull request.
