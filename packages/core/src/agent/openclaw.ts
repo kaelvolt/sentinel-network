@@ -138,11 +138,12 @@ export class OpenClaw {
     const response = await client.chat.completions.create({
       model: this.config.model,
       messages: messages.map(m => ({
-        role: m.role,
-        content: m.content,
-        tool_calls: m.tool_calls,
-        tool_call_id: m.tool_call_id,
-      })),
+          role: m.role,
+          content: m.content,
+          ...(m.tool_calls ? { tool_calls: m.tool_calls } : {}),
+          ...(m.tool_call_id ? { tool_call_id: m.tool_call_id } : {}),
+        })) as unknown as import("openai/resources/chat/completions").ChatCompletionMessageParam[],
+        
       tools: tools?.map(t => ({
         type: 'function',
         function: {
@@ -213,11 +214,11 @@ export class OpenClaw {
       throw new Error(`Custom provider error: ${response.status}`);
     }
 
-    const data = await response.json();
+    const data = await response.json() as { choices?: Array<{ message?: { content?: string; tool_calls?: ToolCall[] } }>; usage?: { promptTokens: number; completionTokens: number; totalTokens: number } };
 
     return {
       content: data.choices?.[0]?.message?.content || null,
-      toolCalls: data.choices?.[0]?.message?.tool_calls,
+      toolCalls: data.choices?.[0]?.message?.tool_calls as ToolCall[] | undefined,
       usage: data.usage,
     };
   }

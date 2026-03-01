@@ -1,6 +1,6 @@
 import postgres from 'postgres';
 import { drizzle } from 'drizzle-orm/postgres-js';
-import { config, logger } from '@kael/core';
+import { config, logger } from '@kael/shared';
 import * as schema from './schema/index.js';
 
 const client = postgres(config.databaseUrl, { max: 20 });

@@ -70,7 +70,7 @@ export class DataTransformer {
     }
   }
 
-  private applyCustomRule(item: Record<string, unknown>, rule: TransformRule): void {
+  private applyCustomRule(_item: Record<string, unknown>, _rule: TransformRule): void {
     // Custom transformation logic would go here
     // For now, it's a placeholder for extensibility
   }

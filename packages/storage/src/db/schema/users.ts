@@ -1,4 +1,4 @@
-import { pgTable, varchar, timestamp, text, pgEnum } from 'drizzle-orm/pg-core';
+import { pgTable, varchar, timestamp, pgEnum } from 'drizzle-orm/pg-core';
 import { createId } from '@paralleldrive/cuid2';
 
 export const userRoleEnum = pgEnum('user_role', ['admin', 'user', 'viewer']);

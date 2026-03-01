@@ -17,7 +17,6 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@kael/core": "workspace:*",
     "@kael/shared": "workspace:*",
     "@kael/storage": "workspace:*"
   },

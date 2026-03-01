@@ -10,7 +10,7 @@ import type {
   ClaimStatus,
   ReasoningStepType,
   ModelProvider,
-} from './enums.js';
+} from "./enums.js";
 
 /**
  * Base entity interface with common fields
@@ -137,7 +137,7 @@ export interface Cluster extends BaseEntity {
   /** When the cluster was last updated */
   updatedAt: Date;
   /** Current cluster status */
-  status: 'active' | 'stale' | 'resolved';
+  status: "active" | "stale" | "resolved";
 }
 
 /**
@@ -152,6 +152,23 @@ export interface ReasoningStep {
   output: string;
   /** When this step was performed */
   timestamp: Date;
+}
+
+/**
+ * Standard reasoning step (non-tool)
+ */
+export interface StandardReasoningStep extends ReasoningStep {
+  type: ReasoningStepType.EXTRACT | ReasoningStepType.NORMALIZE | ReasoningStepType.CLUSTER | ReasoningStepType.SCORE | ReasoningStepType.SUMMARIZE | ReasoningStepType.VALIDATE | ReasoningStepType.CORROBORATE | ReasoningStepType.DIVERGE;
+}
+
+/**
+ * Tool call step (for future LLM integration)
+ */
+export interface ToolCallStep extends ReasoningStep {
+  type: ReasoningStepType.TOOL_CALL;
+  toolName: string;
+  toolInput: Record<string, unknown>;
+  toolOutput: unknown;
 }
 
 /**
@@ -202,34 +219,69 @@ export interface PaginatedResult<T> {
 /**
  * Type for creating a new Source (omits system fields)
  */
-export type CreateSource = Omit<Source, 'id' | 'createdAt'>;
+export type CreateSource = Omit<Source, "id" | "createdAt">;
 
 /**
  * Type for creating a new RawItem
  */
-export type CreateRawItem = Omit<RawItem, 'id' | 'createdAt' | 'hash' | 'status'>;
+export type CreateRawItem = Omit<RawItem, "id" | "createdAt" | "hash" | "status">;
 
 /**
  * Type for creating a new Claim
  */
-export type CreateClaim = Omit<Claim, 'id' | 'createdAt' | 'status'>;
+export type CreateClaim = Omit<Claim, "id" | "createdAt" | "status">;
 
 /**
  * Type for creating new Evidence
  */
-export type CreateEvidence = Omit<Evidence, 'id' | 'createdAt'>;
+export type CreateEvidence = Omit<Evidence, "id" | "createdAt">;
 
 /**
  * Type for creating a new Signal
  */
-export type CreateSignal = Omit<Signal, 'id' | 'createdAt' | 'updatedAt' | 'confidenceLabel'>;
+export type CreateSignal = Omit<Signal, "id" | "createdAt" | "updatedAt" | "confidenceLabel">;
 
 /**
  * Type for creating a new Cluster
  */
-export type CreateCluster = Omit<Cluster, 'id' | 'createdAt' | 'updatedAt' | 'status'>;
+export type CreateCluster = Omit<Cluster, "id" | "createdAt" | "updatedAt" | "status">;
 
 /**
  * Type for creating a new ReasoningTrail
  */
-export type CreateReasoningTrail = Omit<ReasoningTrail, 'id' | 'createdAt'>;
+export type CreateReasoningTrail = Omit<ReasoningTrail, "id" | "createdAt">;
+
+/**
+ * A digest - a periodic summary of signals for publication
+ */
+export interface Digest extends BaseEntity {
+  /** Start of digest period */
+  periodStart: Date;
+  /** End of digest period */
+  periodEnd: Date;
+  /** Title of the digest */
+  title: string;
+  /** Markdown content */
+  content: string;
+  /** Plain text summary */
+  summary: string;
+  /** References to included signals */
+  signalIds: string[];
+  /** Number of signals included */
+  signalCount: number;
+  /** Kael's notes on uncertainty and what to watch */
+  kaelNotes: string;
+  /** Additional metadata */
+  meta?: Record<string, unknown>;
+  /** Whether the digest has been published */
+  published: boolean;
+  /** When the digest was published */
+  publishedAt?: Date;
+  /** When the digest was last updated */
+  updatedAt: Date;
+}
+
+/**
+ * Type for creating a new Digest
+ */
+export type CreateDigest = Omit<Digest, "id" | "createdAt" | "updatedAt">;

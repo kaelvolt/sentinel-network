@@ -1,34 +1,34 @@
-import Redis from 'ioredis';
-import { config, logger } from '@kael/core';
+import { Redis } from "ioredis";
+import { config, logger } from "@kael/shared";
 
 export const redis = new Redis(config.redisUrl, {
-  retryStrategy: (times) => {
+  retryStrategy: (times: number) => {
     const delay = Math.min(times * 50, 2000);
     return delay;
   },
   maxRetriesPerRequest: 3,
 });
 
-redis.on('connect', () => {
-  logger.info('Redis connected');
+redis.on("connect", () => {
+  logger.info("Redis connected");
 });
 
-redis.on('error', (error) => {
-  logger.error('Redis error', { error });
+redis.on("error", (error: Error) => {
+  logger.error("Redis error", { error: error.message });
 });
 
 export async function closeRedis(): Promise<void> {
   await redis.quit();
-  logger.info('Redis connection closed');
+  logger.info("Redis connection closed");
 }
 
 export async function testConnection(): Promise<boolean> {
   try {
     await redis.ping();
-    logger.info('Redis connected successfully');
+    logger.info("Redis connected successfully");
     return true;
   } catch (error) {
-    logger.error('Redis connection failed', { error });
+    logger.error("Redis connection failed", { error });
     return false;
   }
 }

@@ -1,6 +1,6 @@
 import { Source } from '@kael/shared';
 import { createAdapter, SourceAdapter } from '../adapters/index.js';
-import { logger } from '@kael/core';
+import { logger } from '@kael/shared';
 
 export interface SyncResult {
   sourceId: string;

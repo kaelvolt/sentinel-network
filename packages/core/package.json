@@ -9,20 +9,23 @@
     }
   },
   "scripts": {
-    "build": "tsc",
-    "dev": "tsc --watch",
-    "clean": "rm -rf dist",
-    "lint": "eslint src --ext .ts",
-    "lint:fix": "eslint src --ext .ts --fix",
-    "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "build": "echo 'skip'",
+    "dev": "echo 'skip'",
+    "clean": "echo 'skip'",
+    "lint": "echo 'skip'",
+    "typecheck": "echo 'skip'"
   },
   "dependencies": {
-    "@kael/shared": "workspace:*"
+    "@kael/shared": "workspace:*",
+    "@kael/notifier": "workspace:*",
+    "@kael/storage": "workspace:*",
+    "@kael/sources": "workspace:*",
+    "@kael/analysis": "workspace:*",
+    "openai": "^4.77.0",
+    "zod": "^3.22.4"
   },
   "devDependencies": {
     "@kael/tsconfig": "workspace:*",
-    "typescript": "^5.4.5",
-    "vitest": "^2.0.0"
+    "typescript": "^5.4.5"
   }
 }

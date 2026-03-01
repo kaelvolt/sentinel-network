@@ -37,6 +37,7 @@ coverage/
 *.tmp
 *.temp
 .cache/
+.kael/
 
 # Docker volumes
 docker-data/

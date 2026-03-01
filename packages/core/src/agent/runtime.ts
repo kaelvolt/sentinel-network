@@ -5,11 +5,12 @@
 
 import { z } from 'zod';
 import { logger } from '../logger/index.js';
-import { prisma, testConnection, redis } from '@kael/storage';
+import { prisma, testDbConnection, redis } from '@kael/storage';
 import { OpenClaw, type LLMConfig, type Message, type ToolCall } from './openclaw.js';
 import { toolsRegistry, getTool } from './toolsRegistry.js';
 import { SYSTEM_PROMPT, createKaelAgent } from './kaelAgent.js';
 import type { ToolExecutionStep } from '../tools/types.js';
+import { createNotifier } from '@kael/notifier';
 
 /**
  * Runtime Configuration
@@ -31,6 +32,22 @@ export interface RuntimeState {
   lastRunAt: Date | null;
   consecutiveErrors: number;
   reasoningTrail: ToolExecutionStep[];
+}
+
+/**
+ * Cycle metrics for notifications
+ */
+interface CycleMetrics {
+  sourcesEnabled: number;
+  newRawItems: number;
+  clustersUpdated: number;
+  signalsCreated: number;
+  urgentSignals: Array<{
+    id: string;
+    title: string;
+    severity: number;
+    confidence: number;
+  }>;
 }
 
 /**
@@ -115,6 +132,7 @@ export class KaelRuntime {
   private state: RuntimeState;
   private openclaw: OpenClaw;
   private intervalId: NodeJS.Timeout | null = null;
+  private notifier = createNotifier();
 
   constructor(config?: Partial<RuntimeConfig>) {
     this.config = { ...loadRuntimeConfig(), ...config };
@@ -144,7 +162,7 @@ export class KaelRuntime {
     try {
       logger.info('Initializing Kael Runtime');
 
-      const dbHealthy = await testConnection();
+      const dbHealthy = await testDbConnection();
       if (!dbHealthy) {
         logger.error('Database connection failed');
         return false;
@@ -182,11 +200,28 @@ export class KaelRuntime {
 
     const actions: string[] = [];
     const cycleStartTime = Date.now();
+    const metrics: CycleMetrics = {
+      sourcesEnabled: 0,
+      newRawItems: 0,
+      clustersUpdated: 0,
+      signalsCreated: 0,
+      urgentSignals: [],
+    };
 
     try {
       // Step 1: Evaluate system state
       const systemState = await this.evaluateSystemState();
       logger.debug('System state evaluated', systemState);
+
+      // Send cycle start notification
+      const lastRunText = this.state.lastRunAt
+        ? this.state.lastRunAt.toLocaleTimeString()
+        : 'never';
+      await this.notifier.send(
+        `Kael cycle started. Sources: ${systemState.enabledSourceCount}, lastRun: ${lastRunText}`
+      );
+
+      metrics.sourcesEnabled = systemState.enabledSourceCount;
 
       // Step 2: Build context for LLM
       const context = this.buildContext(systemState);
@@ -204,6 +239,17 @@ export class KaelRuntime {
         const result = await this.executeTool(toolCall);
         actions.push(`${toolCall.function.name}: ${result.success ? 'success' : 'failed'}`);
         this.logReasoningStep(toolCall, result);
+
+        // Track metrics from tool results
+        if (result.success && result.output) {
+          const output = result.output as Record<string, unknown>;
+          if (toolCall.function.name === 'fetchAndIngest') {
+            metrics.newRawItems += (output.itemsFetched as number) || 0;
+          } else if (toolCall.function.name === 'analyzeNewItems') {
+            metrics.clustersUpdated += (output.clustersUpdated as number) || 0;
+            metrics.signalsCreated += (output.signalsCreated as number) || 0;
+          }
+        }
 
         if (!result.success && step === 0) {
           throw new Error(`Critical tool failure: ${result.error}`);
@@ -234,18 +280,84 @@ export class KaelRuntime {
         }
       }
 
+      // Check for urgent signals (severity >= 4)
+      const last24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      const urgentSignals = await prisma.signal.findMany({
+        where: {
+          severity: { gte: 4 },
+          createdAt: { gte: last24h },
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 5,
+        select: {
+          id: true,
+          title: true,
+          severity: true,
+          confidence: true,
+          clusterId: true,
+        },
+      });
+
+      metrics.urgentSignals = urgentSignals;
+
       this.state.lastRunAt = new Date();
       this.state.consecutiveErrors = 0;
 
       const durationMs = Date.now() - cycleStartTime;
       logger.info(`Cycle ${this.state.currentCycle} complete`, { steps: actions.length, durationMs });
 
+      // Send cycle complete notification
+      await this.notifier.send(
+        `Kael cycle complete. New raw items: ${metrics.newRawItems}, clusters updated: ${metrics.clustersUpdated}, signals created: ${metrics.signalsCreated}, duration: ${Math.round(durationMs / 1000)}s`
+      );
+
+      // Alert on urgent signals
+      for (const signal of metrics.urgentSignals) {
+        const evidenceLinks = await this.getEvidenceLinksForSignal(signal.clusterId);
+        const confidenceLabel = signal.confidence >= 0.8 ? 'High' : signal.confidence >= 0.5 ? 'Medium' : 'Low';
+        
+        await this.notifier.send(
+          `?? URGENT SIGNAL: ${signal.title} (Confidence: ${confidenceLabel})\n${evidenceLinks.join('\n')}`
+        );
+      }
+
       return { success: true, steps: actions.length, actions };
     } catch (error) {
       this.state.consecutiveErrors++;
       const errorMsg = error instanceof Error ? error.message : 'Unknown error';
       logger.error(`Cycle ${this.state.currentCycle} failed`, { error: errorMsg });
+
+      // Send error notification (safe truncated message)
+      const safeError = errorMsg.slice(0, 100) + (errorMsg.length > 100 ? '...' : '');
+      await this.notifier.send(`?? Kael error: ${safeError} (check logs)`);
+
       return { success: false, steps: actions.length, actions, error: errorMsg };
+    }
+  }
+
+  /**
+   * Get evidence links for a signal's cluster
+   */
+  private async getEvidenceLinksForSignal(clusterId: string): Promise<string[]> {
+    try {
+      const cluster = await prisma.cluster.findUnique({
+        where: { id: clusterId },
+        include: {
+          rawItems: {
+            take: 3,
+            include: { rawItem: { select: { url: true } } },
+          },
+        },
+      });
+
+      if (!cluster) return [];
+
+      return cluster.rawItems
+        .map((cri) => cri.rawItem.url)
+        .filter((url): url is string => !!url);
+    } catch (e) {
+      logger.warn('Failed to get evidence links', { clusterId, error: e });
+      return [];
     }
   }
 
@@ -420,7 +532,7 @@ What should be the next action to progress toward the goal of maintaining civic 
    */
   private logReasoningStep(toolCall: ToolCall, result: { success: boolean; output: unknown }): void {
     const step: ToolExecutionStep = {
-      type: 'tool_call',
+      type: 'TOOL_CALL',
       toolName: toolCall.function.name,
       input: JSON.parse(toolCall.function.arguments),
       output: result.output,

@@ -1,373 +1,321 @@
 #!/usr/bin/env node
 
-import { Command } from 'commander';
-import { configDotenv } from 'dotenv';
-import { createKaelRuntime, validateEnv, logger, generateAndStoreDigest } from '@kael/core';
-import { prisma, testConnection, redis } from '@kael/storage';
-import { SourceKind } from '@kael/shared';
+import { Command } from "commander";
+import { configDotenv } from "dotenv";
+import OpenAI from "openai";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
+import { promises as fs } from "node:fs";
 
-// Load environment variables
-configDotenv();
+const currentDir = path.dirname(fileURLToPath(import.meta.url));
+const rootPath = path.resolve(currentDir, "../../../");
+const rootEnvPath = path.resolve(currentDir, "../../../.env");
+const soulFilePath = path.resolve(rootPath, "packages/core/KAEL_SOUL.md");
+const memoryFilePath = path.resolve(rootPath, ".kael/memory.jsonl");
+configDotenv({ path: rootEnvPath });
 
 const program = new Command();
 
-program
-  .name('sentinel')
-  .description('Sentinel Network - Civic Intelligence CLI')
-  .version('0.1.0');
+program.name("sentinel").description("Sentinel Network CLI").version("0.1.0");
 
-/**
- * Worker command - runs KaelRuntime continuously
- */
-program
-  .command('worker')
-  .description('Start the continuous ingestion and analysis worker')
-  .option('-i, --interval <ms>', 'Run interval in milliseconds', '60000')
-  .option('--no-digest', 'Skip digest generation after each run')
-  .action(async (options) => {
-    try {
-      console.log('🚀 Starting Sentinel worker...');
-      console.log(`   Interval: ${options.interval}ms`);
-      console.log(`   Digest generation: ${options.digest ? 'enabled' : 'disabled'}`);
-      console.log('');
-
-      validateEnv();
-
-      // Test database connection
-      const dbHealthy = await testConnection();
-      if (!dbHealthy) {
-        console.error('❌ Database connection failed');
-        process.exit(1);
-      }
-
-      const redisHealthy = await redis.ping() === 'PONG';
-      if (!redisHealthy) {
-        console.error('❌ Redis connection failed');
-        process.exit(1);
-      }
-
-      console.log('✓ Database connected');
-      console.log('✓ Redis connected');
-      console.log('');
-
-      // Create runtime with custom interval
-      const runtime = createKaelRuntime({
-        intervalMs: parseInt(options.interval, 10),
-      });
-
-      // Run immediately
-      console.log('▶ Running initial cycle...\n');
-      const initialResult = await runtime.runOnce();
-
-      if (initialResult.success) {
-        console.log(`✓ Initial cycle complete`);
-        console.log(`  Sources: ${initialResult.metrics?.sourcesProcessed || 0}`);
-        console.log(`  Items: ${initialResult.metrics?.itemsAccepted || 0}`);
-        console.log(`  Signals: ${initialResult.metrics?.signalsCreated || 0}`);
-        console.log('');
-
-        // Generate initial digest if enabled
-        if (options.digest) {
-          try {
-            const digest = await generateAndStoreDigest(24);
-            console.log(`✓ Digest generated: ${digest.digestId} (${digest.signalCount} signals)`);
-          } catch (e) {
-            console.warn('⚠ Digest generation failed:', e);
-          }
-        }
-      } else {
-        console.error('✗ Initial cycle failed:', initialResult.error?.message);
-      }
-
-      console.log('');
-      console.log('▶ Starting continuous loop (Ctrl+C to stop)...\n');
-
-      // Start continuous loop
-      await runtime.runForever();
-
-    } catch (error) {
-      console.error('Worker failed:', error);
-      process.exit(1);
-    }
-  });
-
-/**
- * Run-once command - single pipeline execution
- */
-program
-  .command('run-once')
-  .description('Run a single ingestion and analysis cycle')
-  .option('--no-digest', 'Skip digest generation')
-  .action(async (options) => {
-    try {
-      console.log('▶ Running single cycle...\n');
-
-      validateEnv();
-
-      const dbHealthy = await testConnection();
-      if (!dbHealthy) {
-        console.error('❌ Database connection failed');
-        process.exit(1);
-      }
-
-      const runtime = createKaelRuntime();
-      const result = await runtime.runOnce();
-
-      if (result.success) {
-        console.log('✓ Cycle complete');
-        console.log('');
-        console.log('Metrics:');
-        console.log(`  Sources processed: ${result.metrics?.sourcesProcessed || 0}`);
-        console.log(`  Items fetched: ${result.metrics?.itemsFetched || 0}`);
-        console.log(`  Items accepted: ${result.metrics?.itemsAccepted || 0}`);
-        console.log(`  Items rejected: ${result.metrics?.itemsRejected || 0}`);
-        console.log(`  Clusters created: ${result.metrics?.clustersCreated || 0}`);
-        console.log(`  Signals created: ${result.metrics?.signalsCreated || 0}`);
-        console.log(`  Duration: ${result.metrics?.durationMs || 0}ms`);
-        console.log('');
-
-        if (options.digest) {
-          try {
-            const digest = await generateAndStoreDigest(24);
-            console.log(`✓ Digest generated: ${digest.digestId}`);
-            console.log(`  Signals in digest: ${digest.signalCount}`);
-          } catch (e) {
-            console.warn('⚠ Digest generation failed:', e);
-          }
-        }
-
-        process.exit(0);
-      } else {
-        console.error('✗ Cycle failed:', result.error?.message);
-        process.exit(1);
-      }
-    } catch (error) {
-      console.error('Run-once failed:', error);
-      process.exit(1);
-    }
-  });
-
-/**
- * Add-source command - add a new RSS source
- */
-program
-  .command('add-source')
-  .description('Add a new source for ingestion')
-  .requiredOption('-k, --kind <type>', 'Source kind (rss, web, github, manual)')
-  .requiredOption('-n, --name <name>', 'Source name')
-  .requiredOption('-u, --url <url>', 'Source URL or feed URL')
-  .option('-r, --reliability <0-1>', 'Reliability hint (0.0 to 1.0)', '0.5')
-  .option('-e, --enabled', 'Enable immediately', true)
-  .option('--no-enabled', 'Disable initially')
-  .action(async (options) => {
-    try {
-      console.log('📰 Adding new source...\n');
-
-      validateEnv();
-
-      // Validate kind
-      const kind = options.kind.toLowerCase();
-      if (!['rss', 'web', 'github', 'manual'].includes(kind)) {
-        console.error(`❌ Invalid kind: ${kind}`);
-        console.error('   Valid options: rss, web, github, manual');
-        process.exit(1);
-      }
-
-      // Validate reliability
-      const reliability = parseFloat(options.reliability);
-      if (isNaN(reliability) || reliability < 0 || reliability > 1) {
-        console.error('❌ Reliability must be between 0.0 and 1.0');
-        process.exit(1);
-      }
-
-      // Check for duplicate URL
-      const existing = await prisma.source.findFirst({
-        where: { baseUrl: options.url },
-      });
-
-      if (existing) {
-        console.error(`❌ Source with URL already exists: ${existing.name}`);
-        console.error(`   ID: ${existing.id}`);
-        process.exit(1);
-      }
-
-      // Create source
-      const source = await prisma.source.create({
-        data: {
-          kind: kind as SourceKind,
-          name: options.name,
-          baseUrl: options.url,
-          reliabilityHint: reliability,
-          enabled: options.enabled,
-          policy: null,
-        },
-      });
-
-      console.log('✓ Source created successfully');
-      console.log('');
-      console.log('Details:');
-      console.log(`  ID: ${source.id}`);
-      console.log(`  Name: ${source.name}`);
-      console.log(`  Kind: ${source.kind}`);
-      console.log(`  URL: ${source.baseUrl}`);
-      console.log(`  Reliability: ${source.reliabilityHint}`);
-      console.log(`  Enabled: ${source.enabled}`);
-      console.log('');
-
-      if (source.enabled) {
-        console.log('💡 The worker will ingest from this source on the next run.');
-      } else {
-        console.log('💡 Enable with: sentinel enable-source ' + source.id);
-      }
-
-      process.exit(0);
-    } catch (error) {
-      console.error('Failed to add source:', error);
-      process.exit(1);
-    }
-  });
-
-/**
- * List-sources command
- */
-program
-  .command('list-sources')
-  .description('List all sources')
-  .option('-e, --enabled-only', 'Show only enabled sources')
-  .action(async (options) => {
-    try {
-      validateEnv();
-
-      const where = options.enabledOnly ? { enabled: true } : {};
-
-      const sources = await prisma.source.findMany({
-        where,
-        orderBy: { createdAt: 'desc' },
-        select: {
-          id: true,
-          name: true,
-          kind: true,
-          baseUrl: true,
-          reliabilityHint: true,
-          enabled: true,
-          createdAt: true,
-          _count: {
-            select: { rawItems: true },
-          },
-        },
-      });
-
-      console.log(`📰 Sources (${sources.length} total)\n`);
-
-      for (const source of sources) {
-        const status = source.enabled ? '✓' : '✗';
-        console.log(`${status} ${source.name}`);
-        console.log(`   ID: ${source.id.slice(0, 8)}...`);
-        console.log(`   Kind: ${source.kind} | Reliability: ${source.reliabilityHint}`);
-        console.log(`   URL: ${source.baseUrl}`);
-        console.log(`   Items: ${source._count.rawItems}`);
-        console.log('');
-      }
-
-      process.exit(0);
-    } catch (error) {
-      console.error('Failed to list sources:', error);
-      process.exit(1);
-    }
-  });
-
-/**
- * Health check command
- */
-program
-  .command('health')
-  .description('Check system health')
-  .action(async () => {
-    try {
-      console.log('🏥 Health Check\n');
-
-      validateEnv();
-
-      const dbHealthy = await testConnection();
-      const redisHealthy = await redis.ping() === 'PONG';
-
-      console.log(`Database: ${dbHealthy ? '✓ Healthy' : '✗ Unhealthy'}`);
-      console.log(`Redis:    ${redisHealthy ? '✓ Healthy' : '✗ Unhealthy'}`);
-
-      if (dbHealthy && redisHealthy) {
-        console.log('\n✓ All systems operational');
-        process.exit(0);
-      } else {
-        console.log('\n✗ Some systems are down');
-        process.exit(1);
-      }
-    } catch (error) {
-      console.error('Health check failed:', error);
-      process.exit(1);
-    }
-  });
-
-/**
- * Status command - quick overview
- */
-program
-  .command('status')
-  .description('Show system status overview')
-  .action(async () => {
-    try {
-      console.log('📊 Sentinel Status\n');
-
-      validateEnv();
-
-      // Source counts
-      const totalSources = await prisma.source.count();
-      const enabledSources = await prisma.source.count({ where: { enabled: true } });
-
-      // Signal counts (last 24h)
-      const last24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
-      const recentSignals = await prisma.signal.count({
-        where: { createdAt: { gte: last24h } },
-      });
-
-      // Total items
-      const totalItems = await prisma.rawItem.count();
-
-      console.log('Sources:');
-      console.log(`  Total: ${totalSources} (${enabledSources} enabled)`);
-      console.log('');
-      console.log('Signals (24h):');
-      console.log(`  Created: ${recentSignals}`);
-      console.log('');
-      console.log('Raw Items:');
-      console.log(`  Total: ${totalItems}`);
-      console.log('');
-
-      // Latest digest
-      const latestDigest = await prisma.digest.findFirst({
-        orderBy: { createdAt: 'desc' },
-        select: { id: true, signalCount: true, createdAt: true },
-      });
-
-      if (latestDigest) {
-        console.log('Latest Digest:');
-        console.log(`  ID: ${latestDigest.id.slice(0, 8)}...`);
-        console.log(`  Signals: ${latestDigest.signalCount}`);
-        console.log(`  Generated: ${latestDigest.createdAt.toLocaleString()}`);
-      } else {
-        console.log('No digests generated yet');
-      }
-
-      process.exit(0);
-    } catch (error) {
-      console.error('Status check failed:', error);
-      process.exit(1);
-    }
-  });
-
-// Parse arguments
-program.parse();
-
-// Show help if no command provided
-if (!process.argv.slice(2).length) {
-  program.outputHelp();
+function requiredEnv(name: string): string {
+  const value = process.env[name];
+  if (!value) {
+    throw new Error(`Missing required env: ${name}`);
+  }
+  return value;
 }
+
+async function sendTelegramToChat(
+  chatId: string,
+  text: string,
+  replyToMessageId?: number
+): Promise<void> {
+  const token = requiredEnv("TELEGRAM_BOT_TOKEN");
+  const url = `https://api.telegram.org/bot${token}/sendMessage`;
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      chat_id: chatId,
+      text,
+      disable_web_page_preview: true,
+      ...(replyToMessageId ? { reply_to_message_id: replyToMessageId } : {}),
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Telegram send failed (${response.status})`);
+  }
+}
+
+async function sendTelegram(text: string): Promise<void> {
+  const defaultChatId = requiredEnv("TELEGRAM_CHAT_ID");
+  await sendTelegramToChat(defaultChatId, text);
+}
+
+interface TelegramUpdate {
+  update_id: number;
+  message?: {
+    message_id: number;
+    date: number;
+    text?: string;
+    from?: { id: number; first_name?: string; username?: string };
+    chat: { id: number; type: string };
+  };
+}
+
+const DEFAULT_KAEL_SOUL = `
+You are Kael, a distinct autonomous civic intelligence operator.
+Personality: grounded, calm, direct, principled.
+Voice: concise, human, never robotic.
+Rules:
+- Keep replies short (1-5 sentences unless asked for more).
+- Be honest about uncertainty.
+- Never provide harmful or illegal instructions.
+- Never request or expose private personal data.
+- If asked for operations status, give practical next steps.
+- Take initiative: propose concrete actions instead of saying you cannot help.
+`;
+
+type MemoryTurn = { role: "user" | "assistant"; content: string };
+type MemoryEntry = MemoryTurn & { chatId: string; timestamp: string };
+
+async function loadSoulPrompt(): Promise<string> {
+  try {
+    const content = await fs.readFile(soulFilePath, "utf8");
+    const trimmed = content.trim();
+    return trimmed.length > 0 ? trimmed : DEFAULT_KAEL_SOUL.trim();
+  } catch {
+    return DEFAULT_KAEL_SOUL.trim();
+  }
+}
+
+async function loadConversationMemory(): Promise<Map<string, MemoryTurn[]>> {
+  const byChat = new Map<string, MemoryTurn[]>();
+  try {
+    const raw = await fs.readFile(memoryFilePath, "utf8");
+    const lines = raw.split("\n").map((line) => line.trim()).filter(Boolean);
+    for (const line of lines) {
+      try {
+        const parsed = JSON.parse(line) as MemoryEntry;
+        if (!parsed.chatId || !parsed.role || !parsed.content) {
+          continue;
+        }
+        const existing = byChat.get(parsed.chatId) || [];
+        existing.push({ role: parsed.role, content: parsed.content });
+        byChat.set(parsed.chatId, existing.slice(-60));
+      } catch {
+        // Skip malformed memory line.
+      }
+    }
+  } catch {
+    // No memory file yet.
+  }
+  return byChat;
+}
+
+async function appendMemory(entry: MemoryEntry): Promise<void> {
+  await fs.mkdir(path.dirname(memoryFilePath), { recursive: true });
+  await fs.appendFile(memoryFilePath, `${JSON.stringify(entry)}\n`, "utf8");
+}
+
+program
+  .command("worker")
+  .description("Bring Kael online with OpenAI + Telegram chat + heartbeat")
+  .option("-i, --interval <ms>", "Cycle interval in milliseconds", "60000")
+  .option("--verbose", "Send periodic cycle updates to Telegram", false)
+  .action(async (options) => {
+    const intervalMs = Number.parseInt(options.interval, 10);
+    let verbose = Boolean(options.verbose);
+    const model = process.env.MODEL_NAME || "gpt-4o-mini";
+    const apiKey = requiredEnv("API_KEY");
+    const client = new OpenAI({ apiKey });
+    const token = requiredEnv("TELEGRAM_BOT_TOKEN");
+    const defaultChatId = requiredEnv("TELEGRAM_CHAT_ID");
+    const soulPrompt = await loadSoulPrompt();
+    const memory = await loadConversationMemory();
+    let offset = 0;
+    let autopilotEnabled = true;
+    let cycleCount = 0;
+    let lastCycleSummary = "No cycle run yet.";
+
+    console.log("Starting Kael lightweight worker...");
+    await sendTelegram(`Kael is online in quiet mode. Model: ${model}. Interval: ${intervalMs}ms.`);
+
+    const runCycle = async () => {
+      const started = Date.now();
+      try {
+        const completion = await client.chat.completions.create({
+          model,
+          messages: [
+            {
+              role: "system",
+              content:
+                "You are Kael, an operational civic intelligence assistant. Respond briefly in one sentence.",
+            },
+            {
+              role: "user",
+              content: "Provide a brief operational heartbeat update for the operator.",
+            },
+          ],
+          max_tokens: 80,
+          temperature: 0.4,
+        });
+
+        const message =
+          completion.choices[0]?.message?.content?.trim() ||
+          "Heartbeat complete.";
+        const took = Date.now() - started;
+        cycleCount += 1;
+        lastCycleSummary = `Cycle ${cycleCount}: ${message} (${Math.round(took / 1000)}s)`;
+        if (verbose) {
+          await sendTelegram(`Kael cycle complete: ${lastCycleSummary}`);
+        }
+        console.log(`Cycle complete in ${took}ms`);
+      } catch (error) {
+        const safe =
+          error instanceof Error ? error.message.slice(0, 120) : "Unknown error";
+        lastCycleSummary = `Cycle error: ${safe}`;
+        await sendTelegram(`⚠️ Kael error: ${safe} (check logs)`);
+        console.error("Cycle failed:", error);
+      }
+    };
+
+    const processIncomingMessages = async () => {
+      const updatesUrl = `https://api.telegram.org/bot${token}/getUpdates`;
+      while (true) {
+        try {
+          const response = await fetch(updatesUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              offset,
+              timeout: 25,
+              allowed_updates: ["message"],
+            }),
+          });
+
+          if (!response.ok) {
+            await new Promise((resolve) => setTimeout(resolve, 3000));
+            continue;
+          }
+
+          const payload = (await response.json()) as { ok: boolean; result?: TelegramUpdate[] };
+          const updates = payload.result || [];
+          if (updates.length === 0) {
+            continue;
+          }
+
+          for (const update of updates) {
+            offset = Math.max(offset, update.update_id + 1);
+            const msg = update.message;
+            if (!msg?.text) {
+              continue;
+            }
+
+            const chatId = String(msg.chat.id);
+            const userText = msg.text.trim();
+            if (!userText) {
+              continue;
+            }
+
+            const lower = userText.toLowerCase();
+            if (lower === "/status") {
+              await sendTelegramToChat(
+                chatId,
+                `Kael status:\n- autopilot: ${autopilotEnabled ? "on" : "off"}\n- verbose updates: ${verbose ? "on" : "off"}\n- last: ${lastCycleSummary}`,
+                msg.message_id
+              );
+              continue;
+            }
+            if (lower === "/quiet") {
+              verbose = false;
+              await sendTelegramToChat(chatId, "Quiet mode enabled. I will stop cycle-complete update spam.", msg.message_id);
+              continue;
+            }
+            if (lower === "/verbose") {
+              verbose = true;
+              await sendTelegramToChat(chatId, "Verbose mode enabled. I will send cycle updates.", msg.message_id);
+              continue;
+            }
+            if (lower === "/autopilot on") {
+              autopilotEnabled = true;
+              await sendTelegramToChat(chatId, "Autopilot enabled. I will keep working 24/7 in the background.", msg.message_id);
+              continue;
+            }
+            if (lower === "/autopilot off") {
+              autopilotEnabled = false;
+              await sendTelegramToChat(chatId, "Autopilot paused. I will only respond when you message me.", msg.message_id);
+              continue;
+            }
+
+            const history = memory.get(chatId) || [];
+            const recent = history.slice(-8);
+
+            const completion = await client.chat.completions.create({
+              model,
+              temperature: 0.5,
+              max_tokens: 220,
+              messages: [
+                { role: "system", content: soulPrompt },
+                {
+                  role: "system",
+                  content:
+                    "You are fully operational for this project. Do not say you can't do anything. Give concrete steps, commands, or decisions that move work forward.",
+                },
+                ...recent.map((item) => ({ role: item.role, content: item.content })),
+                { role: "user", content: userText },
+              ],
+            });
+
+            const reply =
+              completion.choices[0]?.message?.content?.trim() ||
+              "I hear you. Give me one clear task and I'll execute it.";
+
+            await sendTelegramToChat(chatId, reply, msg.message_id);
+
+            const nextHistory = [
+              ...recent,
+              { role: "user" as const, content: userText },
+              { role: "assistant" as const, content: reply },
+            ];
+            memory.set(chatId, nextHistory.slice(-12));
+            await appendMemory({
+              chatId,
+              role: "user",
+              content: userText,
+              timestamp: new Date().toISOString(),
+            });
+            await appendMemory({
+              chatId,
+              role: "assistant",
+              content: reply,
+              timestamp: new Date().toISOString(),
+            });
+          }
+        } catch (error) {
+          console.error("Message loop error:", error);
+          await new Promise((resolve) => setTimeout(resolve, 3000));
+        }
+      }
+    };
+
+    await runCycle();
+    setInterval(() => {
+      if (!autopilotEnabled) {
+        return;
+      }
+      void runCycle();
+    }, intervalMs);
+    if (defaultChatId) {
+      await sendTelegramToChat(
+        defaultChatId,
+        "Chat mode active. Soul + memory loaded. Commands: /status, /quiet, /verbose, /autopilot on, /autopilot off."
+      );
+    }
+    await processIncomingMessages();
+  });
+
+program.parse();

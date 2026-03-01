@@ -1,4 +1,4 @@
-import { pgTable, varchar, timestamp, text, jsonb, pgEnum } from 'drizzle-orm/pg-core';
+import { pgTable, varchar, timestamp, jsonb, pgEnum } from 'drizzle-orm/pg-core';
 import { createId } from '@paralleldrive/cuid2';
 
 export const sourceTypeEnum = pgEnum('source_type', ['api', 'database', 'file', 'stream']);

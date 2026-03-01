@@ -1,4 +1,4 @@
-import { logger } from '@kael/core';
+import { logger } from '@kael/shared';
 
 export interface PipelineStage<TInput, TOutput> {
   name: string;

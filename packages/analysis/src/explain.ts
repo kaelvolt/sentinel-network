@@ -4,11 +4,12 @@
  * Deterministic and auditable
  */
 
-import { logger } from '@kael/core';
-import type { ReasoningStep, StandardReasoningStep, ToolCallStep } from '@kael/shared';
-import type { DedupeResult } from './dedupe.js';
-import type { ClusterResult, ClusterCandidate } from './cluster.js';
-import type { ScoreResult } from './score.js';
+import { logger } from "@kael/shared";
+import { ReasoningStepType } from "@kael/shared";
+import type { ReasoningStep } from "@kael/shared";
+import type { DedupeResult } from "./dedupe.js";
+import type { ClusterResult, ClusterCandidate } from "./cluster.js";
+import type { ScoreResult } from "./score.js";
 
 export interface ExplanationInput {
   rawItemIds: string[];
@@ -21,8 +22,8 @@ export interface ExplanationInput {
 export interface ExplanationOutput {
   steps: ReasoningStep[];
   modelInfo: {
-    provider: 'rule_based';
-    model: 'heuristic-analysis-v1';
+    provider: "rule_based";
+    model: "heuristic-analysis-v1";
     config?: Record<string, unknown>;
   };
   summary: string;
@@ -31,9 +32,9 @@ export interface ExplanationOutput {
 /**
  * Create an extract step for the reasoning trail
  */
-function createExtractStep(itemIds: string[]): StandardReasoningStep {
+function createExtractStep(itemIds: string[]): ReasoningStep {
   return {
-    type: 'extract',
+    type: ReasoningStepType.EXTRACT,
     inputRefs: itemIds,
     output: `Extracted ${itemIds.length} items for analysis`,
     timestamp: new Date(),
@@ -43,13 +44,13 @@ function createExtractStep(itemIds: string[]): StandardReasoningStep {
 /**
  * Create a normalize step (for deduplication)
  */
-function createNormalizeStep(dedupeResult: DedupeResult<unknown>): StandardReasoningStep {
+function createNormalizeStep(dedupeResult: DedupeResult<unknown>): ReasoningStep {
   const { inputCount, uniqueCount, duplicateCount } = dedupeResult.stats;
-  
+
   return {
-    type: 'normalize',
-    inputRefs: dedupeResult.unique.map(u => (u as { id: string }).id),
-    output: `Deduplication: ${inputCount} items → ${uniqueCount} unique, ${duplicateCount} duplicates removed (hash + Jaccard similarity)`,
+    type: ReasoningStepType.NORMALIZE,
+    inputRefs: dedupeResult.unique.map((u) => (u as { id: string }).id),
+    output: `Deduplication: ${inputCount} items -> ${uniqueCount} unique, ${duplicateCount} duplicates removed (hash + Jaccard similarity)`,
     timestamp: new Date(),
   };
 }
@@ -57,23 +58,18 @@ function createNormalizeStep(dedupeResult: DedupeResult<unknown>): StandardReaso
 /**
  * Create a cluster step
  */
-function createClusterStep(clusterResult: ClusterResult): StandardReasoningStep {
+function createClusterStep(clusterResult: ClusterResult): ReasoningStep {
   const { newClustersCount, updatedClustersCount, unclusteredCount } = clusterResult.stats;
-  
+
   const parts: string[] = [];
   if (newClustersCount > 0) parts.push(`${newClustersCount} new cluster(s)`);
   if (updatedClustersCount > 0) parts.push(`${updatedClustersCount} updated cluster(s)`);
   if (unclusteredCount > 0) parts.push(`${unclusteredCount} unclustered`);
-  
-  const allItemIds = [
-    ...clusterResult.newClusters.flatMap(c => c.itemIds),
-    ...clusterResult.updatedClusters.flatMap(u => u.addedItemIds),
-  ];
-  
+
   return {
-    type: 'cluster',
-    inputRefs: allItemIds,
-    output: `Incremental clustering: ${parts.join(', ')} (similarity threshold: 0.70)`,
+    type: ReasoningStepType.CLUSTER,
+    inputRefs: [],
+    output: `Incremental clustering: ${parts.join(", ")} (similarity threshold: 0.70)`,
     timestamp: new Date(),
   };
 }
@@ -85,16 +81,16 @@ function createScoreStep(
   clusterId: string,
   score: ScoreResult,
   itemIds: string[]
-): StandardReasoningStep {
+): ReasoningStep {
   const factorDetails = [
     `sourceReliability: ${Math.round(score.factors.sourceReliability * 100)}%`,
     `corroboration: ${Math.round(score.factors.corroboration * 100)}%`,
     `recency: ${Math.round(score.factors.recency * 100)}%`,
     `diversity: ${Math.round(score.factors.diversity * 100)}%`,
-  ].join(', ');
-  
+  ].join(", ");
+
   return {
-    type: 'score',
+    type: ReasoningStepType.SCORE,
     inputRefs: [clusterId, ...itemIds],
     output: `Severity: ${score.severity}/5, Confidence: ${score.confidenceLabel} (${score.confidence.toFixed(2)}). Factors: ${factorDetails}`,
     timestamp: new Date(),
@@ -108,11 +104,11 @@ function createSummarizeStep(
   clusterId: string,
   summary: { summary: string; keyPoints: string[] },
   itemCount: number
-): StandardReasoningStep {
-  const preview = summary.summary.substring(0, 100) + '...';
-  
+): ReasoningStep {
+  const preview = summary.summary.substring(0, 100) + "...";
+
   return {
-    type: 'summarize',
+    type: ReasoningStepType.SUMMARIZE,
     inputRefs: [clusterId],
     output: `Extractive summary from ${itemCount} items: ${preview}`,
     timestamp: new Date(),
@@ -126,13 +122,13 @@ function createValidateStep(
   clusterId: string,
   signalId: string | null,
   score: ScoreResult
-): StandardReasoningStep {
+): ReasoningStep {
   const status = signalId
     ? `Signal ${signalId} created`
-    : 'Below publication threshold';
-  
+    : "Below publication threshold";
+
   return {
-    type: 'validate',
+    type: ReasoningStepType.VALIDATE,
     inputRefs: signalId ? [clusterId, signalId] : [clusterId],
     output: `Quality gate: confidence ${score.confidenceLabel}, severity ${score.severity}/5. ${status}`,
     timestamp: new Date(),
@@ -146,11 +142,11 @@ function createCorroborateStep(
   clusterId: string,
   itemIds: string[],
   score: ScoreResult
-): StandardReasoningStep | null {
+): ReasoningStep | null {
   if (score.factors.corroboration < 0.5) return null;
-  
+
   return {
-    type: 'corroborate',
+    type: ReasoningStepType.CORROBORATE,
     inputRefs: [clusterId, ...itemIds],
     output: `${itemIds.length} item(s) corroborate the primary claim (corroboration score: ${Math.round(score.factors.corroboration * 100)}%)`,
     timestamp: new Date(),
@@ -163,13 +159,13 @@ function createCorroborateStep(
 function createDivergeStep(
   clusterId: string,
   itemIds: string[]
-): StandardReasoningStep | null {
+): ReasoningStep | null {
   // Placeholder: would detect contradictions in future LLM version
   // For now, skip if items are similar (heuristic assumption)
   if (itemIds.length < 2) return null;
-  
+
   return {
-    type: 'diverge',
+    type: ReasoningStepType.DIVERGE,
     inputRefs: [clusterId, ...itemIds],
     output: `Conflict analysis: No significant contradictions detected among ${itemIds.length} item(s)`,
     timestamp: new Date(),
@@ -187,30 +183,30 @@ function generateClusterExplanation(
   const steps: ReasoningStep[] = [];
   const score = input.scores.get(cluster.id);
   const summary = input.summaries.get(cluster.id);
-  
+
   if (!score || !summary) {
-    logger.warn('Missing score or summary for cluster', { clusterId: cluster.id });
-    return { steps, summary: 'Explanation incomplete' };
+    logger.warn("Missing score or summary for cluster", { clusterId: cluster.id });
+    return { steps, summary: "Explanation incomplete" };
   }
-  
+
   // Add corroboration step if applicable
   const corroborateStep = createCorroborateStep(cluster.id, cluster.itemIds, score);
   if (corroborateStep) {
     steps.push(corroborateStep);
   }
-  
+
   // Score step
   steps.push(createScoreStep(cluster.id, score, cluster.itemIds));
-  
+
   // Summarize step
   steps.push(createSummarizeStep(cluster.id, summary, cluster.itemIds));
-  
+
   // Diverge step (placeholder for future contradiction detection)
   const divergeStep = createDivergeStep(cluster.id, cluster.itemIds);
   if (divergeStep) {
     steps.push(divergeStep);
   }
-  
+
   // Generate narrative summary
   const narrativeParts: string[] = [
     `Cluster "${cluster.topic}" contains ${cluster.itemIds.length} item(s).`,
@@ -218,8 +214,8 @@ function generateClusterExplanation(
     `Severity assessed at ${score.severity}/5 with ${score.confidenceLabel} confidence (${score.confidence.toFixed(2)}).`,
     score.rationale,
   ];
-  
-  return { steps, summary: narrativeParts.join(' ') };
+
+  return { steps, summary: narrativeParts.join(" ") };
 }
 
 /**
@@ -227,19 +223,19 @@ function generateClusterExplanation(
  */
 export function generateExplanation(input: ExplanationInput): ExplanationOutput {
   const steps: ReasoningStep[] = [];
-  
+
   // Step 1: Extract
   steps.push(createExtractStep(input.rawItemIds));
-  
+
   // Step 2: Normalize (deduplication)
   steps.push(createNormalizeStep(input.dedupeResult));
-  
+
   // Step 3: Cluster
   steps.push(createClusterStep(input.clusterResult));
-  
+
   // Steps 4+: Per-cluster scoring and summarization
   const clusterExplanations: string[] = [];
-  
+
   // Process new clusters
   for (const cluster of input.clusterResult.newClusters) {
     const { steps: clusterSteps, summary } = generateClusterExplanation(
@@ -250,20 +246,20 @@ export function generateExplanation(input: ExplanationInput): ExplanationOutput 
     steps.push(...clusterSteps);
     clusterExplanations.push(summary);
   }
-  
+
   // Process updated clusters
   for (const update of input.clusterResult.updatedClusters) {
     // Create a temporary cluster candidate for the update
     const clusterCandidate: ClusterCandidate = {
       id: update.clusterId,
-      topic: 'Updated cluster',
-      canonicalItemId: update.addedItemIds[0] || '',
+      topic: "Updated cluster",
+      canonicalItemId: update.addedItemIds[0] || "",
       itemIds: update.addedItemIds,
-      representativeText: '',
+      representativeText: "",
       avgSimilarity: update.newAvgSimilarity,
       createdAt: new Date(),
     };
-    
+
     const { steps: clusterSteps, summary } = generateClusterExplanation(
       clusterCandidate,
       input,
@@ -272,17 +268,17 @@ export function generateExplanation(input: ExplanationInput): ExplanationOutput 
     steps.push(...clusterSteps);
     clusterExplanations.push(`Updated: ${summary}`);
   }
-  
+
   // Final summary
   const summaryText = clusterExplanations.length > 0
     ? `Analysis complete. ${clusterExplanations.length} cluster(s) processed. ${clusterExplanations[0]}`
     : `Analysis complete. No new clusters formed from ${input.dedupeResult.stats.uniqueCount} unique item(s).`;
-  
+
   const output: ExplanationOutput = {
     steps,
     modelInfo: {
-      provider: 'rule_based',
-      model: 'heuristic-analysis-v1',
+      provider: "rule_based",
+      model: "heuristic-analysis-v1",
       config: {
         similarityThreshold: 0.70,
         dedupeThreshold: 0.85,
@@ -291,12 +287,12 @@ export function generateExplanation(input: ExplanationInput): ExplanationOutput 
     },
     summary: summaryText,
   };
-  
-  logger.debug('Explanation generated', {
+
+  logger.debug("Explanation generated", {
     stepCount: steps.length,
     clusterCount: input.clusterResult.newClusters.length + input.clusterResult.updatedClusters.length,
   });
-  
+
   return output;
 }
 
@@ -310,24 +306,24 @@ export function generateItemExplanation(
 ): ExplanationOutput {
   const steps: ReasoningStep[] = [
     {
-      type: 'extract',
+      type: ReasoningStepType.EXTRACT,
       inputRefs: [itemId],
       output: `Item ${itemId} extracted`,
       timestamp: new Date(),
     },
     {
-      type: 'validate',
+      type: ReasoningStepType.VALIDATE,
       inputRefs: [itemId],
       output: `Item rejected: ${reason}`,
       timestamp: new Date(),
     },
   ];
-  
+
   return {
     steps,
     modelInfo: {
-      provider: 'rule_based',
-      model: 'heuristic-analysis-v1',
+      provider: "rule_based",
+      model: "heuristic-analysis-v1",
     },
     summary: `Item ${itemId} not processed into signal: ${reason}`,
   };

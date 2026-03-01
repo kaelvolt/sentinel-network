@@ -2,7 +2,7 @@
  * Generic HTTP fetcher with retry and timeout support
  */
 
-import { logger } from '@kael/core';
+import { logger } from '@kael/shared';
 
 export interface FetchOptions {
   /** Timeout in milliseconds (default: 10000) */

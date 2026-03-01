@@ -20,7 +20,7 @@ export class Aggregator {
     }
 
     // Grouped aggregation
-    const groups = this.groupBy(data, config.groupBy);
+    const groups = this.groupBy(data, config.groupBy!);
     return Array.from(groups.entries()).map(([key, groupData]) => ({
       ...this.parseGroupKey(key, config.groupBy),
       ...this.computeAggregations(groupData, config.aggregations),

@@ -4,7 +4,7 @@
  */
 
 import Parser from 'rss-parser';
-import { logger } from '@kael/core';
+import { logger } from '@kael/shared';
 import { fetchWithRetry, FetchOptions } from './fetcher.js';
 
 // Extended parser type with custom fields
