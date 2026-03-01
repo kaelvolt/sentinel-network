@@ -1,3 +1,3 @@
-// Entry point for Sentinel Network
+/* eslint-env node */
 
-console.log('Welcome to Sentinel Network');
+console.log('Index file');
