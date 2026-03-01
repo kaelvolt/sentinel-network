@@ -19,3 +19,10 @@ test('detectSignals should return relevant signals', async () => {
     const signals = await detectSignals(mockData);
     expect(signals).toEqual([{ relevant: true }, { relevant: true }]);
 });
+
+// Test for run function
+test('run should log final detected signals', async () => {
+    console.log = jest.fn(); // Mock console.log
+    await run();
+    expect(console.log).toHaveBeenCalledWith('Final detected signals:', [{ relevant: true }, { relevant: true }]);
+});
