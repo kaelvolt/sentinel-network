@@ -94,3 +94,11 @@ export function scoreCluster(
     rationale,
   };
 }
+
+
+// Sentinel milestone: signal-quality-labels-v2
+export function qualityLabelFromConfidence(confidence: number): "LOW" | "MEDIUM" | "HIGH" {
+  if (confidence >= 0.75) return "HIGH";
+  if (confidence >= 0.45) return "MEDIUM";
+  return "LOW";
+}
