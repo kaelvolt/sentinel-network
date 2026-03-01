@@ -25,6 +25,7 @@ if (!apiKey) {
 const openai = new OpenAI({ apiKey });
 const MODEL = process.env.MODEL_NAME || "gpt-4o-mini";
 const ROOT = process.cwd();
+const BACKLOG_PATH = ".kael/sentinel-backlog.json";
 
 console.log("\n╔════════════════════════════════════════╗");
 console.log("║        KAEL                            ║");
@@ -43,6 +44,22 @@ let lastCommitAt = Date.now();
 const COMMIT_MAX_INTERVAL_MS = 20 * 60 * 1000;
 let consecutiveNoopCycles = 0;
 const FIX_BATCH_SIZE = 6;
+
+const SENTINEL_NORTH_STAR = {
+  mission: "Reduce civilizational blind spots via traceable civic signals",
+  principles: [
+    "Evidence-first outputs",
+    "Audit trails for every decision",
+    "No high-confidence single-source signals",
+    "Explicit uncertainty labels",
+    "Composable extensible architecture",
+  ],
+  benchmarkTargets: [
+    "Perplexity-level citation discipline",
+    "Protocol-level composability (web4-style decentralization readiness)",
+    "Machine-readable public feed standards",
+  ],
+};
 
 async function tg(text, force = false) {
   if (!telegramToken || !telegramChatId) {
@@ -68,6 +85,16 @@ async function readSafe(filePath) {
   }
 }
 
+async function readJsonSafe(filePath) {
+  const txt = await readSafe(filePath);
+  if (!txt) return null;
+  try {
+    return JSON.parse(txt);
+  } catch {
+    return null;
+  }
+}
+
 async function writeSafe(filePath, content) {
   try {
     await mkdir(filePath.split('/').slice(0, -1).join('/'), { recursive: true });
@@ -77,6 +104,11 @@ async function writeSafe(filePath, content) {
   } catch {
     return false;
   }
+}
+
+async function writeJsonSafe(filePath, value) {
+  const json = JSON.stringify(value, null, 2);
+  return writeSafe(filePath, json);
 }
 
 async function runCmd(command, timeout = 60000) {
@@ -148,6 +180,143 @@ async function assessState() {
   }
   if (pendingFixes.length > 0) {
     console.log(`   Queued files to fix: ${pendingFixes.slice(0, 5).join(", ")}`);
+  }
+  console.log(`   North star: ${SENTINEL_NORTH_STAR.mission}`);
+}
+
+async function ensureBacklog() {
+  const existing = await readJsonSafe(BACKLOG_PATH);
+  if (existing) return existing;
+
+  const seed = {
+    version: 1,
+    createdAt: new Date().toISOString(),
+    milestones: [
+      {
+        id: "source-health-v1",
+        title: "Source Health Monitoring v1",
+        status: "pending",
+        objective: "Track source reliability and freshness for ingestion decisions",
+      },
+      {
+        id: "signal-quality-metrics-v1",
+        title: "Signal Quality Metrics v1",
+        status: "pending",
+        objective: "Standardize confidence/severity quality indicators",
+      },
+      {
+        id: "public-feed-contract-v1",
+        title: "Public Feed Contract v1",
+        status: "pending",
+        objective: "Define machine-readable feed contract for interoperable publication",
+      },
+    ],
+  };
+  await writeJsonSafe(BACKLOG_PATH, seed);
+  return seed;
+}
+
+async function buildSentinelMilestone() {
+  console.log("\n🏗️ Building Sentinel milestone...");
+  const backlog = await ensureBacklog();
+  const next = backlog.milestones.find((m) => m.status === "pending");
+  if (!next) {
+    console.log("   No pending milestones");
+    return;
+  }
+
+  console.log(`   Working milestone: ${next.id}`);
+
+  if (next.id === "source-health-v1") {
+    const file = "packages/core/src/monitoring/sourceHealth.ts";
+    const content = `export interface SourceHealthSnapshot {
+  sourceId: string;
+  checkedAt: string;
+  successRate24h: number;
+  avgLatencyMs24h: number;
+  consecutiveFailures: number;
+  freshnessScore: number;
+}
+
+export function computeFreshnessScore(lastSuccessAt: Date | null, now: Date = new Date()): number {
+  if (!lastSuccessAt) return 0;
+  const ageHours = (now.getTime() - lastSuccessAt.getTime()) / 36e5;
+  if (ageHours <= 1) return 1;
+  if (ageHours >= 24) return 0;
+  return 1 - ageHours / 24;
+}
+
+export function shouldDeprioritizeSource(snapshot: SourceHealthSnapshot): boolean {
+  return snapshot.successRate24h < 0.5 || snapshot.consecutiveFailures >= 5 || snapshot.freshnessScore < 0.2;
+}
+`;
+    const ok = await writeSafe(file, content);
+    if (ok) {
+      next.status = "completed";
+      next.completedAt = new Date().toISOString();
+      stats.fixes++;
+      await writeJsonSafe(BACKLOG_PATH, backlog);
+      console.log(`   ✅ Delivered ${next.id}`);
+    }
+    return;
+  }
+
+  if (next.id === "signal-quality-metrics-v1") {
+    const file = "packages/analysis/src/metrics.ts";
+    const content = `export interface SignalQualityMetrics {
+  corroborationCount: number;
+  uniqueSourceCount: number;
+  evidenceCoverage: number; // 0..1
+  recencyScore: number; // 0..1
+}
+
+export function computeConfidenceFromMetrics(m: SignalQualityMetrics): number {
+  const corroboration = Math.min(m.corroborationCount / 5, 1);
+  const diversity = Math.min(m.uniqueSourceCount / 4, 1);
+  const score = 0.35 * corroboration + 0.25 * diversity + 0.25 * m.evidenceCoverage + 0.15 * m.recencyScore;
+  return Math.max(0, Math.min(1, score));
+}
+`;
+    const ok = await writeSafe(file, content);
+    if (ok) {
+      next.status = "completed";
+      next.completedAt = new Date().toISOString();
+      stats.fixes++;
+      await writeJsonSafe(BACKLOG_PATH, backlog);
+      console.log(`   ✅ Delivered ${next.id}`);
+    }
+    return;
+  }
+
+  if (next.id === "public-feed-contract-v1") {
+    const file = "packages/shared/src/contracts/feed.ts";
+    const content = `export interface PublicSignalFeedItem {
+  id: string;
+  publishedAt: string;
+  title: string;
+  summary: string;
+  severity: number; // 0..5
+  confidence: number; // 0..1
+  confidenceLabel: "LOW" | "MEDIUM" | "HIGH";
+  evidenceUrls: string[];
+  reasoningTrailId: string;
+}
+
+export interface PublicSignalFeed {
+  version: "v1";
+  generatedAt: string;
+  items: PublicSignalFeedItem[];
+}
+`;
+    const ok = await writeSafe(file, content);
+    if (ok) {
+      next.status = "completed";
+      next.completedAt = new Date().toISOString();
+      stats.fixes++;
+      await writeJsonSafe(BACKLOG_PATH, backlog);
+      console.log(`   ✅ Delivered ${next.id}`);
+    }
+    return;
   }
 }
 
@@ -368,8 +537,10 @@ async function autoCommitPerUpdate(taskName) {
   if (!timeDue && !meaningfulBatch) return;
 
   console.log(`   🔁 Checkpoint commit (${meaningfulBatch ? "batch" : "time-based"})...`);
+  const backlog = await ensureBacklog();
+  const completed = backlog.milestones.filter((m) => m.status === "completed").length;
   const committed = await commit(
-    `Kael checkpoint: task=${taskName}, fixes=${stats.fixes}, changes=${stats.changes}`
+    `Kael checkpoint: ${taskName} | fixes=${stats.fixes} changes=${stats.changes} milestones=${completed}/${backlog.milestones.length}`
   );
   if (committed) {
     stats.changes = 0;
@@ -388,6 +559,7 @@ async function kaelLife() {
 
   const tasks = [
     assessState,
+    buildSentinelMilestone,
     fixTypeErrors,
     buildIngestion,
     buildAnalysis,
