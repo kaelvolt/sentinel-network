@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyPluginOptions, FastifyRequest } from 'fast
 import { z } from 'zod';
 import { getLatestDigest, getDigestHistory, generateAndStoreDigest } from '@kael/core';
 import { NotFoundError } from '@kael/core';
+import { db } from '@kael/storage';
 
 // Validation schemas
 const getHistoryQuerySchema = z.object({
@@ -35,14 +36,14 @@ export async function digestsRoutes(
   });
 
   // GET /digests/history?limit=
-  app.get('/history', async (request: FastifyRequest<{ Querystring: unknown }>) => {
+  app.get('/history', async (request: FastifyRequest<{ Querystring: { limit: number } }>) => {
     const query = getHistoryQuerySchema.parse(request.query);
     
     const history = await getDigestHistory(query.limit);
     
     return {
       ok: true,
-      data: history.map(d => ({
+      data: history.map((d: { createdAt: Date }) => ({
         ...d,
         createdAt: d.createdAt.toISOString(),
       })),
@@ -55,10 +56,9 @@ export async function digestsRoutes(
 
   // GET /digests/:id
   app.get('/:id', async (request: FastifyRequest<{ Params: { id: string } }>) => {
-    const { prisma } = await import('@kael/storage');
     const { id } = request.params;
     
-    const digest = await prisma.digest.findUnique({
+    const digest = await db.digest.findUnique({
       where: { id },
     });
     
@@ -81,7 +81,7 @@ export async function digestsRoutes(
   });
 
   // POST /digests/generate (manual trigger)
-  app.post('/generate', async (request: FastifyRequest<{ Body: unknown }>) => {
+  app.post('/generate', async (request: FastifyRequest<{ Body: { hoursBack: number } }>) => {
     const body = generateBodySchema.parse(request.body);
     
     const result = await generateAndStoreDigest(body.hoursBack);

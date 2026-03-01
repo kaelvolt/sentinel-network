@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyPluginOptions, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { prisma } from '@kael/storage';
+import { db } from '@kael/storage';
 import { NotFoundError } from '@kael/core';
 import { logger } from '@kael/core';
 
@@ -15,13 +15,13 @@ export async function ingestRoutes(
   _opts: FastifyPluginOptions
 ): Promise<void> {
   // POST /ingest/run
-  app.post('/run', async (request: FastifyRequest<{ Body: unknown }>) => {
+  app.post('/run', async (request: FastifyRequest<{ Body: { sourceId?: string; limit: number } }>) => {
     const body = runIngestBodySchema.parse(request.body);
     const { sourceId, limit } = body;
 
     // If sourceId provided, verify it exists and is enabled
     if (sourceId) {
-      const source = await prisma.source.findUnique({
+      const source = await db.source.findUnique({
         where: { id: sourceId },
       });
 
@@ -43,8 +43,8 @@ export async function ingestRoutes(
 
     // Get enabled sources to ingest from
     const sources = sourceId
-      ? await prisma.source.findMany({ where: { id: sourceId, enabled: true } })
-      : await prisma.source.findMany({ where: { enabled: true } });
+      ? await db.source.findMany({ where: { id: sourceId, enabled: true } })
+      : await db.source.findMany({ where: { enabled: true } });
 
     if (sources.length === 0) {
       return {
@@ -78,10 +78,10 @@ export async function ingestRoutes(
   // GET /ingest/status
   app.get('/status', async () => {
     // Get ingestion statistics
-    const totalSources = await prisma.source.count();
-    const enabledSources = await prisma.source.count({ where: { enabled: true } });
-    const totalRawItems = await prisma.rawItem.count();
-    const recentRawItems = await prisma.rawItem.count({
+    const totalSources = await db.source.count();
+    const enabledSources = await db.source.count({ where: { enabled: true } });
+    const totalRawItems = await db.rawItem.count();
+    const recentRawItems = await db.rawItem.count({
       where: {
         fetchedAt: {
           gte: new Date(Date.now() - 24 * 60 * 60 * 1000), // Last 24 hours
