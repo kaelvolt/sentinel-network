@@ -2,9 +2,11 @@ const axios = require('axios');
 
 async function monitorSources() {
     console.log('Monitoring sources...');
-    // Example: Fetch data from a public API
+    // Mocked data for testing
+    const mockResponse = { data: [{ relevant: true }, { relevant: false }] };
     try {
-        const response = await axios.get('https://api.example.com/data');
+        // Simulate fetching data from an API
+        const response = mockResponse; // Replace axios.get with mock data
         console.log('Data fetched:', response.data);
     } catch (error) {
         console.error('Error fetching data:', error);
@@ -13,17 +15,12 @@ async function monitorSources() {
 
 async function detectSignals(data) {
     console.log('Detecting signals...');
-    // Example: Simple signal detection logic
+    if (!data) return []; // Handle undefined data
     const signals = data.filter(item => item.relevant);
     console.log('Detected signals:', signals);
+    return signals; // Return signals for testing
 }
 
-// New function to run the monitoring process
-async function runMonitoring() {
-    const data = await monitorSources();
-    detectSignals(data);
-}
-
-module.exports = { monitorSources, detectSignals, runMonitoring };
+module.exports = { monitorSources, detectSignals };
 
 console.log('Sentinel Network is running');

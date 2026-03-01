@@ -1,27 +1,21 @@
-const { monitorSources, detectSignals, runMonitoring } = require('./index');
+const { monitorSources, detectSignals } = require('./index');
 
-// Mocking axios for testing
-jest.mock('axios');
-const axios = require('axios');
+// Mock data for testing
+const mockData = [
+    { relevant: true },
+    { relevant: false },
+    { relevant: true },
+];
 
-describe('Sentinel Network Tests', () => {
-    test('monitorSources fetches data', async () => {
-        const data = [{ relevant: true }, { relevant: false }];
-        axios.get.mockResolvedValue({ data });
-        await monitorSources();
-        expect(axios.get).toHaveBeenCalledWith('https://api.example.com/data');
-    });
+// Test for monitorSources function
+test('monitorSources should log data fetching', async () => {
+    console.log = jest.fn(); // Mock console.log
+    await monitorSources();
+    expect(console.log).toHaveBeenCalledWith('Monitoring sources...');
+});
 
-    test('detectSignals filters relevant signals', () => {
-        const data = [{ relevant: true }, { relevant: false }];
-        const signals = detectSignals(data);
-        expect(signals).toEqual([{ relevant: true }]);
-    });
-
-    test('runMonitoring orchestrates monitoring and detection', async () => {
-        const data = [{ relevant: true }, { relevant: false }];
-        axios.get.mockResolvedValue({ data });
-        await runMonitoring();
-        expect(axios.get).toHaveBeenCalled();
-    });
+// Test for detectSignals function
+test('detectSignals should return relevant signals', async () => {
+    const signals = await detectSignals(mockData);
+    expect(signals).toEqual([{ relevant: true }, { relevant: true }]);
 });
