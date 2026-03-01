@@ -1,7 +1,3 @@
-// TypeScript file
+// Removed unused variables
 
-const digestsRoutes = async (_req, _res) => {
-    // Implementation
-};
-
-export default digestsRoutes;
+// Your route logic here
