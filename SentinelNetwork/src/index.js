@@ -18,6 +18,12 @@ async function detectSignals(data) {
     console.log('Detected signals:', signals);
 }
 
-module.exports = { monitorSources, detectSignals };
+// New function to run the monitoring process
+async function runMonitoring() {
+    const data = await monitorSources();
+    detectSignals(data);
+}
+
+module.exports = { monitorSources, detectSignals, runMonitoring };
 
 console.log('Sentinel Network is running');
