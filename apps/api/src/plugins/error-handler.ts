@@ -1,6 +1,6 @@
 // TypeScript file
 
-const errorHandler = async (error) => {
+const errorHandler = async (error: unknown) => {
     console.error(error);
 };
 

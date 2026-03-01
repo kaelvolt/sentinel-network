@@ -1,23 +1,17 @@
-import axios from 'axios';
+const axios = require('axios');
 
-// List of sources to monitor
-const sources = [
-    'https://api.example.com/data', // Example API
-    'https://another-source.com/info' // Another example
-];
-
-// Function to fetch data from sources
 const fetchData = async () => {
-    const results = [];
-    for (const source of sources) {
-        try {
-            const response = await axios.get(source);
-            results.push(response.data);
-        } catch (error) {
-            console.error(`Error fetching from ${source}:`, error.message);
-        }
+    try {
+        // Simulate fetching data from sources
+        const data = await Promise.all([
+            axios.get('https://api.source1.com/data'),
+            axios.get('https://api.source2.com/data')
+        ]);
+        return data.map(response => response.data);
+    } catch (error) {
+        console.error('Error fetching data:', error);
+        return [undefined, undefined];
     }
-    return results;
 };
 
-export { fetchData };
+module.exports = { fetchData };
