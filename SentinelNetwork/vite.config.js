@@ -1,11 +1,10 @@
 import { defineConfig } from 'vite';
 
 export default defineConfig({
-    root: 'src',
     build: {
-        outDir: '../dist',
+        outDir: 'dist',
         rollupOptions: {
-            input: 'index.html'
+            input: 'src/index.html'
         }
     }
 });
