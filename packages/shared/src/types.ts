@@ -285,3 +285,10 @@ export interface Digest extends BaseEntity {
  * Type for creating a new Digest
  */
 export type CreateDigest = Omit<Digest, "id" | "createdAt" | "updatedAt">;
+
+
+// Sentinel milestone: public-feed-contract-v2
+export interface PublicSignalFeedItemV2 extends PublicSignalFeedItem {
+  freshnessHours: number;
+  provenance: "heuristic" | "llm" | "hybrid";
+}
