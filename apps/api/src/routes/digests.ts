@@ -1,6 +1,6 @@
 // TypeScript file
 
-const digestsRoutes = async (req, res) => {
+const digestsRoutes = async (_req, _res) => {
     // Implementation
 };
 

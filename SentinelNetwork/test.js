@@ -1,4 +1,4 @@
-/* eslint-env node */
+/* eslint-env jest */
 
 describe('Test Suite', () => {
     it('should pass', () => {
