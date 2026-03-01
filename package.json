@@ -5,15 +5,15 @@
   "type": "module",
   "packageManager": "pnpm@9.15.0",
   "scripts": {
-    "build": "turbo run build",
-    "dev": "turbo run dev --parallel",
-    "lint": "turbo run lint",
-    "lint:fix": "turbo run lint:fix",
+    "build": "vite build",
+    "dev": "vite",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
     "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md}\"",
     "format:check": "prettier --check \"**/*.{ts,tsx,js,jsx,json,md}\"",
-    "typecheck": "turbo run typecheck",
-    "test": "turbo run test",
-    "clean": "turbo run clean && rm -rf node_modules",
+    "typecheck": "tsc --noEmit",
+    "test": "jest",
+    "clean": "rimraf dist && rimraf node_modules",
     "db:migrate": "pnpm --filter @kael/storage db:migrate",
     "db:studio": "pnpm --filter @kael/storage db:studio",
     "db:generate": "pnpm --filter @kael/storage db:generate",
@@ -21,14 +21,15 @@
     "kael": "tsx kael-worker.ts",
     "changeset": "changeset",
     "version-packages": "changeset version",
-    "release": "turbo run build --filter=./packages/* && changeset publish"
+    "release": "vite build && changeset publish"
   },
   "devDependencies": {
     "@changesets/cli": "^2.27.10",
     "@types/node": "^20.10.5",
     "eslint": "^8.57.0",
     "prettier": "^3.2.5",
-    "typescript": "^5.4.5"
+    "typescript": "^5.4.5",
+    "vite": "^4.0.0"
   },
   "engines": {
     "node": ">=20.0.0",
@@ -36,7 +37,6 @@
   },
   "dependencies": {
     "dotenv": "^16.4.5",
-    "drizzle-orm": "^0.36.0",
-    "turbo": "^2.8.12"
+    "drizzle-orm": "^0.36.0"
   }
 }

@@ -7,7 +7,7 @@ import swaggerUi from '@fastify/swagger-ui';
 import { configDotenv } from 'dotenv';
 
 import { validateEnv, logger, config } from '@kael/core';
-import { testConnection as testDb, closeDb, redis } from '@kael/storage';
+import { testDbConnection as testDb, closeDb, redis } from '@kael/storage';
 import { routes } from './routes/index.js';
 import { errorHandler } from './plugins/error-handler.js';
 
