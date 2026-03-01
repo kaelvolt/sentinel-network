@@ -8,6 +8,7 @@ async function monitorSources() {
         // Simulate fetching data from an API
         const response = mockResponse; // Replace axios.get with mock data
         console.log('Data fetched:', response.data);
+        return response.data; // Return data for further processing
     } catch (error) {
         console.error('Error fetching data:', error);
     }
