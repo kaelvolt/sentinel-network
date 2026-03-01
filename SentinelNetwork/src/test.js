@@ -1,4 +1,4 @@
-const { monitorSources, detectSignals } = require('./index');
+const { monitorSources, detectSignals, run } = require('./index');
 
 // Mock data for testing
 const mockData = [
