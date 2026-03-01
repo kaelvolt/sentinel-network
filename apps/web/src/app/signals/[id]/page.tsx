@@ -76,13 +76,13 @@ export default async function SignalPage({ params }: SignalPageProps) {
             <h1 className="text-2xl font-medium leading-tight flex-1">
               {signal.title}
             </h1>
-            <span className={`px-2 py-1 text-xs font-medium rounded-sm whitespace-nowrap ${getSeverityClass(signal.severity)}`}>
+            <span className={`px-2 py-1 text-xs font-medium rounded-sm whitespace-nowrap ${getSeverityClass(signal.severity)}`}> 
               {getSeverityLabel(signal.severity)}
             </span>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            <span className={`px-2 py-0.5 text-xs border rounded-sm ${getConfidenceClass(signal.confidenceLabel)}`}>
+            <span className={`px-2 py-0.5 text-xs border rounded-sm ${getConfidenceClass(signal.confidenceLabel)}`}> 
               {signal.confidenceLabel} ({Math.round(signal.confidence * 100)}%)
             </span>
             {signal.tags.map((tag) => (
