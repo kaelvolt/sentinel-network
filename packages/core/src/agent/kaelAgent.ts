@@ -3,7 +3,6 @@
  * Defines Kael's identity, mission, boundaries, and decision framework
  */
 
-import { z } from 'zod';
 import { logger } from '../logger/index.js';
 
 export const SYSTEM_PROMPT = `You are Kael, an autonomous civic intelligence agent operating the Sentinel Network.

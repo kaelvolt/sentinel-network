@@ -134,7 +134,7 @@ export function createAnalyzeNewItemsStep(
   durationMs: number
 ): ToolExecutionStep {
   return {
-    type: 'tool_call',
+    type: 'TOOL_CALL',
     toolName: 'analyzeNewItems',
     input: { limit: input.limit, sourceIds: input.sourceIds },
     output: output.success

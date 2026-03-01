@@ -1,3 +1,4 @@
+```typescript
 /**
  * Tools Registry for Kael Agent
  * Contains all callable tools with their metadata
@@ -52,43 +53,43 @@ export const toolsRegistry: Tool[] = [
     name: 'listSources',
     description: 'List all configured information sources with their status (enabled/disabled).',
     inputSchema: listSourcesInputSchema,
-    execute: wrapTool(listSources),
+    execute: wrapTool(listSources as (input: { enabledOnly: boolean; limit: number; }) => Promise<{ success: boolean; [key: string]: unknown }>)
   },
   {
     name: 'addSource',
     description: 'Add a new information source (RSS feed or webhook) to monitor.',
     inputSchema: addSourceInputSchema,
-    execute: wrapTool(addSource),
+    execute: wrapTool(addSource as (input: { url: string; name: string; kind: "rss" | "web" | "github" | "manual"; reliabilityHint: number; }) => Promise<{ success: boolean; [key: string]: unknown }>)
   },
   {
     name: 'fetchAndIngest',
     description: 'Fetch new content from all enabled sources and ingest as raw items.',
     inputSchema: fetchAndIngestInputSchema,
-    execute: wrapTool(fetchAndIngest),
+    execute: wrapTool(fetchAndIngest as (input: { limit: number; sourceIds?: string[] | undefined; }) => Promise<{ success: boolean; [key: string]: unknown }>)
   },
   {
     name: 'analyzeNewItems',
     description: 'Analyze pending raw items to extract claims, form clusters, and generate signals.',
     inputSchema: analyzeNewItemsInputSchema,
-    execute: wrapTool(analyzeNewItems),
+    execute: wrapTool(analyzeNewItems as (input: { limit: number; sourceIds?: string[] | undefined; requestId?: string | undefined; }) => Promise<{ success: boolean; [key: string]: unknown }>)
   },
   {
     name: 'generateDigest',
     description: 'Generate a daily summary digest of recent signals and activity.',
     inputSchema: generateDigestInputSchema,
-    execute: wrapTool(generateDigest),
+    execute: wrapTool(generateDigest as (input: { hoursBack: number; publish: boolean; requestId?: string | undefined; }) => Promise<{ success: boolean; [key: string]: unknown }>)
   },
   {
     name: 'searchRawItems',
     description: 'Search through raw items by keywords, date range, or source.',
     inputSchema: searchRawItemsInputSchema,
-    execute: wrapTool(searchRawItems),
+    execute: wrapTool(searchRawItems as (input: { limit: number; query: string; sourceId?: string | undefined; }) => Promise<{ success: boolean; [key: string]: unknown }>)
   },
   {
     name: 'sendTelegramUpdate',
     description: 'Send a brief operational update to the operator via Telegram.',
     inputSchema: sendTelegramUpdateInputSchema,
-    execute: wrapTool(sendTelegramUpdate),
+    execute: wrapTool(sendTelegramUpdate as (input: { text: string; priority: "normal" | "urgent"; }) => Promise<{ success: boolean; [key: string]: unknown }>)
   },
 ];
 
@@ -114,3 +115,4 @@ export function getToolsDescription(): string {
     .map(tool => `- ${tool.name}: ${tool.description}`)
     .join('\n');
 }
+```

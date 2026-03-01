@@ -95,7 +95,7 @@ export function createGenerateDigestStep(
   durationMs: number
 ): ToolExecutionStep {
   return {
-    type: 'tool_call',
+    type: 'TOOL_CALL',
     toolName: 'generateDigest',
     input: { hoursBack: input.hoursBack, publish: input.publish },
     output: output.success
