@@ -24,3 +24,12 @@ async function detectSignals(data) {
 module.exports = { monitorSources, detectSignals };
 
 console.log('Sentinel Network is running');
+
+// New functionality to monitor and detect signals
+async function run() {
+    const data = await monitorSources();
+    const signals = await detectSignals(data);
+    console.log('Final detected signals:', signals);
+}
+
+run();
