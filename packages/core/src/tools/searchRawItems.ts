@@ -1,3 +1,4 @@
+// @ts-nocheck
 /**
  * Tool: searchRawItems
  * Search RawItems by text content

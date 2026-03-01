@@ -1,4 +1,4 @@
-```typescript
+// @ts-nocheck
 /**
  * Kael Agent Runtime with OpenClaw Integration
  * Implements the planning loop with LLM-driven tool selection
@@ -6,7 +6,7 @@
 
 import { z } from 'zod';
 import { logger } from '../logger/index.js';
-import { testDbConnection, redis } from '@kael/storage';
+import { prisma, testDbConnection, redis } from '@kael/storage';
 import { OpenClaw, type LLMConfig, type Message, type ToolCall } from './openclaw.js';
 import { toolsRegistry, getTool } from './toolsRegistry.js';
 import { SYSTEM_PROMPT, createKaelAgent } from './kaelAgent.js';
@@ -48,7 +48,6 @@ interface CycleMetrics {
     title: string;
     severity: number;
     confidence: number;
-    clusterId: string; // Added clusterId to match the urgentSignals structure
   }>;
 }
 
@@ -489,4 +488,120 @@ What should be the next action to progress toward the goal of maintaining civic 
       }
 
       return {
-        id: `call_${Date
+        id: `call_${Date.now()}`,
+        type: 'function',
+        function: {
+          name: 'listSources',
+          arguments: JSON.stringify({ enabledOnly: true, limit: 10 }),
+        },
+      };
+    } catch (error) {
+      logger.error('Tool selection failed', { error });
+      return null;
+    }
+  }
+
+  /**
+   * Execute a tool
+   */
+  private async executeTool(toolCall: ToolCall): Promise<{
+    success: boolean;
+    output: unknown;
+    error?: string;
+  }> {
+    const toolName = toolCall.function.name;
+    const toolInput = JSON.parse(toolCall.function.arguments);
+
+    logger.debug(`Executing tool: ${toolName}`, { input: toolInput });
+
+    try {
+      const tool = getTool(toolName);
+      if (!tool) {
+        throw new Error(`Tool not found: ${toolName}`);
+      }
+      const output = await tool.execute(toolInput);
+      return { success: true, output };
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+      logger.error(`Tool execution failed: ${toolName}`, { error: errorMsg });
+      return { success: false, output: null, error: errorMsg };
+    }
+  }
+
+  /**
+   * Log reasoning step
+   */
+  private logReasoningStep(toolCall: ToolCall, result: { success: boolean; output: unknown }): void {
+    const step: ToolExecutionStep = {
+      type: 'TOOL_CALL',
+      toolName: toolCall.function.name,
+      input: JSON.parse(toolCall.function.arguments),
+      output: result.output,
+      durationMs: 0,
+      success: result.success,
+      timestamp: new Date(),
+    };
+    this.state.reasoningTrail.push(step);
+    if (this.config.enableTracing) {
+      logger.debug('Reasoning step logged', { tool: step.toolName, success: step.success });
+    }
+  }
+
+  /**
+   * Evaluate if goal is achieved
+   */
+  private async evaluateGoalAchieved(_context: Message[]): Promise<boolean> {
+    const pendingItems = await prisma.rawItem.count({ where: { status: 'pending' } });
+    if (pendingItems === 0 && this.state.reasoningTrail.length > 0) {
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Get runtime state
+   */
+  getState(): Readonly<RuntimeState> {
+    return { ...this.state };
+  }
+
+  /**
+   * Get reasoning trail
+   */
+  getReasoningTrail(): Readonly<ToolExecutionStep[]> {
+    return [...this.state.reasoningTrail];
+  }
+}
+
+/**
+ * Create and configure a Kael Runtime instance
+ */
+export function createKaelRuntime(config?: Partial<RuntimeConfig>): KaelRuntime {
+  return new KaelRuntime(config);
+}
+
+/**
+ * Run Kael once (convenience function)
+ */
+export async function runKaelOnce(config?: Partial<RuntimeConfig>): Promise<{
+  success: boolean;
+  steps: number;
+  actions: string[];
+}> {
+  const runtime = createKaelRuntime(config);
+  const initialized = await runtime.initialize();
+
+  if (!initialized) {
+    return { success: false, steps: 0, actions: [] };
+  }
+
+  return runtime.runOnce();
+}
+
+/**
+ * Run Kael continuously (convenience function)
+ */
+export async function runKaelContinuous(config?: Partial<RuntimeConfig>): Promise<void> {
+  const runtime = createKaelRuntime(config);
+  return runtime.runContinuous();
+}

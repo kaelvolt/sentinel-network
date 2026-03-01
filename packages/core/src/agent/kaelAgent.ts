@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Kael Agent Core
  * Defines Kael's identity, mission, boundaries, and decision framework
  */
@@ -75,7 +75,7 @@ export interface KaelAgentConfig {
   strictMode?: boolean;
 }
 
-export function createKaelAgent(config: KaelAgentConfig): {
+export function createKaelAgent(_config: KaelAgentConfig): {
   setGoal: (goal: GoalState) => void;
   getState: () => AgentState;
   validateGoalConstraints: (goal: GoalState) => { valid: boolean; violations: string[] };

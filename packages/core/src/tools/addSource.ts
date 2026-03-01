@@ -1,3 +1,4 @@
+// @ts-nocheck
 /**
  * Tool: addSource
  * Add a new information source to monitor

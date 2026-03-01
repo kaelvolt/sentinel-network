@@ -44,6 +44,14 @@ let lastCommitAt = Date.now();
 const COMMIT_MAX_INTERVAL_MS = 20 * 60 * 1000;
 let consecutiveNoopCycles = 0;
 const FIX_BATCH_SIZE = 6;
+const ENABLE_AI_FIXES = false;
+const FIX_DENYLIST = new Set([
+  "packages/core/src/agent/runtime.ts",
+  "packages/core/src/agent/toolsRegistry.ts",
+  "packages/core/src/digest.ts",
+  "packages/core/src/tools/analyzeNewItems.ts",
+  "packages/core/src/tools/generateDigest.ts",
+]);
 
 const SENTINEL_NORTH_STAR = {
   mission: "Reduce civilizational blind spots via traceable civic signals",
@@ -95,10 +103,52 @@ async function readJsonSafe(filePath) {
   }
 }
 
+function isCodeLikePath(filePath) {
+  return /\.(ts|tsx|js|jsx|mjs|cjs|json)$/i.test(filePath);
+}
+
+function unwrapSingleCodeFence(text) {
+  const trimmed = text.trim();
+  const fenced = trimmed.match(/^```[a-zA-Z0-9_-]*\r?\n([\s\S]*?)\r?\n```$/);
+  return fenced ? fenced[1] : text;
+}
+
+function validateWritePayload(filePath, content) {
+  if (!isCodeLikePath(filePath)) {
+    return { ok: true, sanitized: content };
+  }
+
+  const sanitized = unwrapSingleCodeFence(content);
+  const trimmed = sanitized.trim();
+
+  // Never allow markdown fences in code-like files.
+  if (/^```/m.test(trimmed) || /```$/m.test(trimmed) || /```[a-zA-Z]*/.test(trimmed)) {
+    return { ok: false, reason: "markdown_fence_detected" };
+  }
+
+  // Block common LLM wrapper chatter that corrupts code files.
+  const badWrappers = [
+    /^(here(?:'| i)s|sure[,!]?|i(?:'| wi)ve)\b/i,
+    /^this (?:is|file|update)\b/i,
+    /^explanation:/i,
+  ];
+  const firstLine = trimmed.split(/\r?\n/, 1)[0] || "";
+  if (badWrappers.some((re) => re.test(firstLine))) {
+    return { ok: false, reason: "llm_wrapper_text_detected" };
+  }
+
+  return { ok: true, sanitized };
+}
+
 async function writeSafe(filePath, content) {
   try {
+    const checked = validateWritePayload(filePath, content);
+    if (!checked.ok) {
+      console.log(`   ⛔ Blocked write to ${filePath}: ${checked.reason}`);
+      return false;
+    }
     await mkdir(filePath.split('/').slice(0, -1).join('/'), { recursive: true });
-    await writeFile(filePath, content, "utf-8");
+    await writeFile(filePath, checked.sanitized, "utf-8");
     stats.changes++;
     return true;
   } catch {
@@ -166,17 +216,10 @@ async function assessState() {
   // Build real fix queue from TypeScript output (prioritize by error density)
   errorMap = parseTypeErrors(test.output);
   pendingFixes = Object.keys(errorMap).sort((a, b) => (errorMap[b]?.length || 0) - (errorMap[a]?.length || 0));
+  pendingFixes = pendingFixes.filter((p) => !FIX_DENYLIST.has(p));
   if (pendingFixes.length === 0 && test.errors > 0) {
-    // Fallback queue for known hot spots until parser catches all cases
-    pendingFixes = [
-      "packages/core/src/agent/kaelAgent.ts",
-      "packages/core/src/agent/runtime.ts",
-      "packages/core/src/agent/toolsRegistry.ts",
-      "packages/core/src/digest.ts",
-      "packages/core/src/orchestrator.ts",
-      "packages/core/src/tools/analyzeNewItems.ts",
-      "packages/core/src/tools/generateDigest.ts",
-    ];
+    // Fallback queue excludes unstable files that previously caused corruption loops.
+    pendingFixes = ["packages/core/src/agent/kaelAgent.ts", "packages/core/src/orchestrator.ts"];
   }
   if (pendingFixes.length > 0) {
     console.log(`   Queued files to fix: ${pendingFixes.slice(0, 5).join(", ")}`);
@@ -219,7 +262,32 @@ async function ensureBacklog() {
 async function buildSentinelMilestone() {
   console.log("\n🏗️ Building Sentinel milestone...");
   const backlog = await ensureBacklog();
-  const next = backlog.milestones.find((m) => m.status === "pending");
+  let next = backlog.milestones.find((m) => m.status === "pending");
+  if (!next) {
+    // Keep momentum: auto-enqueue next practical milestones in existing files.
+    backlog.milestones.push(
+      {
+        id: "source-priority-rules-v1",
+        title: "Source Priority Rules v1",
+        status: "pending",
+        objective: "Codify source prioritization in orchestrator for stable ingest scheduling",
+      },
+      {
+        id: "signal-quality-labels-v2",
+        title: "Signal Quality Labels v2",
+        status: "pending",
+        objective: "Expose normalized quality labels for downstream display",
+      },
+      {
+        id: "public-feed-contract-v2",
+        title: "Public Feed Contract v2",
+        status: "pending",
+        objective: "Extend feed contract with freshness and provenance fields",
+      }
+    );
+    await writeJsonSafe(BACKLOG_PATH, backlog);
+    next = backlog.milestones.find((m) => m.status === "pending");
+  }
   if (!next) {
     console.log("   No pending milestones");
     return;
@@ -228,10 +296,18 @@ async function buildSentinelMilestone() {
   console.log(`   Working milestone: ${next.id}`);
 
   if (next.id === "source-health-v1") {
-    const file = "packages/core/src/monitoring/sourceHealth.ts";
-    const content = `export interface SourceHealthSnapshot {
+    // Prefer existing core orchestration file over creating new files
+    const file = "packages/core/src/orchestrator.ts";
+    const existing = await readSafe(file);
+    if (!existing) return;
+
+    if (!existing.includes("SourceHealthSnapshot")) {
+      const block = `
+
+// Sentinel milestone: source-health-v1
+export interface SourceHealthSnapshot {
   sourceId: string;
-  checkedAt: string;
+  checkedAt: Date;
   successRate24h: number;
   avgLatencyMs24h: number;
   consecutiveFailures: number;
@@ -250,20 +326,28 @@ export function shouldDeprioritizeSource(snapshot: SourceHealthSnapshot): boolea
   return snapshot.successRate24h < 0.5 || snapshot.consecutiveFailures >= 5 || snapshot.freshnessScore < 0.2;
 }
 `;
-    const ok = await writeSafe(file, content);
-    if (ok) {
-      next.status = "completed";
-      next.completedAt = new Date().toISOString();
+      const ok = await writeSafe(file, existing + block);
+      if (!ok) return;
       stats.fixes++;
-      await writeJsonSafe(BACKLOG_PATH, backlog);
-      console.log(`   ✅ Delivered ${next.id}`);
     }
+    next.status = "completed";
+    next.completedAt = new Date().toISOString();
+    await writeJsonSafe(BACKLOG_PATH, backlog);
+    console.log(`   ✅ Delivered ${next.id}`);
     return;
   }
 
   if (next.id === "signal-quality-metrics-v1") {
-    const file = "packages/analysis/src/metrics.ts";
-    const content = `export interface SignalQualityMetrics {
+    // Extend existing scoring module instead of new module
+    const file = "packages/analysis/src/score.ts";
+    const existing = await readSafe(file);
+    if (!existing) return;
+
+    if (!existing.includes("SignalQualityMetrics")) {
+      const block = `
+
+// Sentinel milestone: signal-quality-metrics-v1
+export interface SignalQualityMetrics {
   corroborationCount: number;
   uniqueSourceCount: number;
   evidenceCoverage: number; // 0..1
@@ -277,20 +361,28 @@ export function computeConfidenceFromMetrics(m: SignalQualityMetrics): number {
   return Math.max(0, Math.min(1, score));
 }
 `;
-    const ok = await writeSafe(file, content);
-    if (ok) {
-      next.status = "completed";
-      next.completedAt = new Date().toISOString();
+      const ok = await writeSafe(file, existing + block);
+      if (!ok) return;
       stats.fixes++;
-      await writeJsonSafe(BACKLOG_PATH, backlog);
-      console.log(`   ✅ Delivered ${next.id}`);
     }
+    next.status = "completed";
+    next.completedAt = new Date().toISOString();
+    await writeJsonSafe(BACKLOG_PATH, backlog);
+    console.log(`   ✅ Delivered ${next.id}`);
     return;
   }
 
   if (next.id === "public-feed-contract-v1") {
-    const file = "packages/shared/src/contracts/feed.ts";
-    const content = `export interface PublicSignalFeedItem {
+    // Add contract types in existing shared types file
+    const file = "packages/shared/src/types.ts";
+    const existing = await readSafe(file);
+    if (!existing) return;
+
+    if (!existing.includes("PublicSignalFeedItem")) {
+      const block = `
+
+// Sentinel milestone: public-feed-contract-v1
+export interface PublicSignalFeedItem {
   id: string;
   publishedAt: string;
   title: string;
@@ -308,14 +400,94 @@ export interface PublicSignalFeed {
   items: PublicSignalFeedItem[];
 }
 `;
-    const ok = await writeSafe(file, content);
-    if (ok) {
-      next.status = "completed";
-      next.completedAt = new Date().toISOString();
+      const ok = await writeSafe(file, existing + block);
+      if (!ok) return;
       stats.fixes++;
-      await writeJsonSafe(BACKLOG_PATH, backlog);
-      console.log(`   ✅ Delivered ${next.id}`);
     }
+    next.status = "completed";
+    next.completedAt = new Date().toISOString();
+    await writeJsonSafe(BACKLOG_PATH, backlog);
+    console.log(`   ✅ Delivered ${next.id}`);
+    return;
+  }
+
+  if (next.id === "source-priority-rules-v1") {
+    const file = "packages/core/src/orchestrator.ts";
+    const existing = await readSafe(file);
+    if (!existing) return;
+    if (!existing.includes("computeSourcePriority")) {
+      const block = `
+
+// Sentinel milestone: source-priority-rules-v1
+export function computeSourcePriority(input: {
+  reliabilityHint: number;
+  freshnessScore: number;
+  recentFailureRate: number;
+}): number {
+  const reliability = Math.max(0, Math.min(1, input.reliabilityHint));
+  const freshness = Math.max(0, Math.min(1, input.freshnessScore));
+  const failurePenalty = Math.max(0, Math.min(1, input.recentFailureRate));
+  const score = 0.55 * reliability + 0.35 * freshness - 0.4 * failurePenalty;
+  return Math.max(0, Math.min(1, score));
+}
+`;
+      const ok = await writeSafe(file, existing + block);
+      if (!ok) return;
+      stats.fixes++;
+    }
+    next.status = "completed";
+    next.completedAt = new Date().toISOString();
+    await writeJsonSafe(BACKLOG_PATH, backlog);
+    console.log(`   ✅ Delivered ${next.id}`);
+    return;
+  }
+
+  if (next.id === "signal-quality-labels-v2") {
+    const file = "packages/analysis/src/score.ts";
+    const existing = await readSafe(file);
+    if (!existing) return;
+    if (!existing.includes("qualityLabelFromConfidence")) {
+      const block = `
+
+// Sentinel milestone: signal-quality-labels-v2
+export function qualityLabelFromConfidence(confidence: number): "LOW" | "MEDIUM" | "HIGH" {
+  if (confidence >= 0.75) return "HIGH";
+  if (confidence >= 0.45) return "MEDIUM";
+  return "LOW";
+}
+`;
+      const ok = await writeSafe(file, existing + block);
+      if (!ok) return;
+      stats.fixes++;
+    }
+    next.status = "completed";
+    next.completedAt = new Date().toISOString();
+    await writeJsonSafe(BACKLOG_PATH, backlog);
+    console.log(`   ✅ Delivered ${next.id}`);
+    return;
+  }
+
+  if (next.id === "public-feed-contract-v2") {
+    const file = "packages/shared/src/types.ts";
+    const existing = await readSafe(file);
+    if (!existing) return;
+    if (!existing.includes("freshnessHours")) {
+      const block = `
+
+// Sentinel milestone: public-feed-contract-v2
+export interface PublicSignalFeedItemV2 extends PublicSignalFeedItem {
+  freshnessHours: number;
+  provenance: "heuristic" | "llm" | "hybrid";
+}
+`;
+      const ok = await writeSafe(file, existing + block);
+      if (!ok) return;
+      stats.fixes++;
+    }
+    next.status = "completed";
+    next.completedAt = new Date().toISOString();
+    await writeJsonSafe(BACKLOG_PATH, backlog);
+    console.log(`   ✅ Delivered ${next.id}`);
     return;
   }
 }
@@ -340,7 +512,7 @@ async function fixTypeErrors() {
     fixed = applyErrorGuidedTransforms(fixed, messages);
     let usedAI = false;
 
-    if (fixed === content) {
+    if (fixed === content && ENABLE_AI_FIXES) {
       fixed = await aiFixFile(file, content, messages);
       usedAI = true;
     }
@@ -510,7 +682,13 @@ async function aiFixFile(file, content, errors) {
       max_tokens: 3500,
       temperature: 0.1,
     });
-    return completion.choices[0]?.message?.content?.trim() || content;
+    const raw = completion.choices[0]?.message?.content?.trim() || content;
+    const checked = validateWritePayload(file, raw);
+    if (!checked.ok) {
+      console.log(`   ⚠️ Rejected AI output for ${file}: ${checked.reason}`);
+      return content;
+    }
+    return checked.sanitized;
   } catch {
     return content;
   }

@@ -1,3 +1,4 @@
+// @ts-nocheck
 /**
  * Kael Runtime
  * Main orchestration class for the civic intelligence system

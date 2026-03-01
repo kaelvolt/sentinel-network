@@ -11,9 +11,6 @@ export * from './orchestrator.js';
 export * from './kael.js';
 export * from './digest.js';
 
-// NEW: Working Kael Agent (OpenClaw-based)
-export { KaelAgent, runKaelAgent } from './kael-agent.js';
-
 // Tools system
 export * from './tools/index.js';
 export * from './agent/toolsRegistry.js';

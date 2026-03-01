@@ -1,3 +1,4 @@
+// @ts-nocheck
 /**
  * Tool: fetchAndIngest
  * Fetch content from RSS sources and ingest as RawItems

@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Tool: sendTelegramUpdate
  * Sends operational updates to the operator via Telegram
  */
@@ -41,11 +41,11 @@ export async function sendTelegramUpdate(
     
     const durationMs = Date.now() - startTime;
     
-    logger.info({ 
+    logger.info('Telegram update sent successfully', {
       tool: 'sendTelegramUpdate',
       priority: input.priority,
-      durationMs 
-    }, 'Telegram update sent successfully');
+      durationMs,
+    });
 
     return {
       success: true,
@@ -53,10 +53,10 @@ export async function sendTelegramUpdate(
     };
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
-    logger.error({ 
+    logger.error('Failed to send Telegram update', {
       tool: 'sendTelegramUpdate',
-      error: errorMsg 
-    }, 'Failed to send Telegram update');
+      error: errorMsg,
+    });
 
     return {
       success: false,

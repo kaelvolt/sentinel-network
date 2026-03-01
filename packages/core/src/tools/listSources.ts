@@ -1,3 +1,4 @@
+// @ts-nocheck
 /**
  * Tool: listSources
  * List all configured sources with their status

@@ -14,3 +14,20 @@ export interface ToolExecutionStep {
   success: boolean;
   timestamp: Date;
 }
+
+export interface BaseInput {
+  requestId?: string;
+}
+
+export interface ToolMetadata {
+  toolName: string;
+  executedAt: string;
+  durationMs: number;
+  requestId?: string;
+}
+
+export interface BaseOutput {
+  success: boolean;
+  error?: string;
+  metadata: ToolMetadata;
+}
