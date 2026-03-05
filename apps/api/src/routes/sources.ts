@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
+import { db } from '@sentinel/storage';
 
 const CreateSourceSchema = z.object({
   name: z.string().min(1).max(200),
@@ -12,18 +13,28 @@ const CreateSourceSchema = z.object({
 type CreateSourceBody = z.infer<typeof CreateSourceSchema>;
 
 export async function sourcesRoutes(app: FastifyInstance) {
-  app.get('/', async (request: FastifyRequest<{ Querystring: { page?: string; limit?: string } }>) => {
+  app.get('/', async (request: FastifyRequest<{ Querystring: { page?: string; limit?: string } }>, reply) => {
     const page = Math.max(1, parseInt(request.query.page || '1', 10));
     const limit = Math.min(100, Math.max(1, parseInt(request.query.limit || '50', 10)));
 
-    // TODO: Replace with actual Prisma query once storage is wired
-    return {
-      ok: true,
-      data: [],
-      total: 0,
-      page,
-      limit,
-    };
+    try {
+      const sources = await db.source.findMany({
+        skip: (page - 1) * limit,
+        take: limit,
+      });
+      const total = await db.source.count();
+
+      return {
+        ok: true,
+        data: sources,
+        total,
+        page,
+        limit,
+      };
+    } catch (error) {
+      app.log.error(error);
+      return reply.status(500).send({ ok: false, error: 'Internal server error' });
+    }
   });
 
   app.get('/:id', async (request: FastifyRequest<{ Params: { id: string } }>, reply) => {
@@ -33,8 +44,16 @@ export async function sourcesRoutes(app: FastifyInstance) {
       return reply.status(400).send({ ok: false, error: 'Missing source ID' });
     }
 
-    // TODO: Replace with actual Prisma query
-    return reply.status(404).send({ ok: false, error: 'Source not found' });
+    try {
+      const source = await db.source.findUnique({ where: { id } });
+      if (!source) {
+        return reply.status(404).send({ ok: false, error: 'Source not found' });
+      }
+      return reply.send({ ok: true, data: source });
+    } catch (error) {
+      app.log.error(error);
+      return reply.status(500).send({ ok: false, error: 'Internal server error' });
+    }
   });
 
   app.post('/', async (request: FastifyRequest<{ Body: CreateSourceBody }>, reply) => {
@@ -48,14 +67,13 @@ export async function sourcesRoutes(app: FastifyInstance) {
       });
     }
 
-    // TODO: Replace with actual Prisma create
-    const source = {
-      id: crypto.randomUUID(),
-      ...parsed.data,
-      createdAt: new Date().toISOString(),
-    };
-
-    return reply.status(201).send({ ok: true, data: source });
+    try {
+      const source = await db.source.create({ data: parsed.data });
+      return reply.status(201).send({ ok: true, data: source });
+    } catch (error) {
+      app.log.error(error);
+      return reply.status(500).send({ ok: false, error: 'Internal server error' });
+    }
   });
 
   app.delete('/:id', async (request: FastifyRequest<{ Params: { id: string } }>, reply) => {
@@ -65,7 +83,15 @@ export async function sourcesRoutes(app: FastifyInstance) {
       return reply.status(400).send({ ok: false, error: 'Missing source ID' });
     }
 
-    // TODO: Replace with actual Prisma delete
-    return reply.status(404).send({ ok: false, error: 'Source not found' });
+    try {
+      const source = await db.source.delete({ where: { id } });
+      return reply.send({ ok: true, data: source });
+    } catch (error) {
+      if (error.code === 'P2025') {
+        return reply.status(404).send({ ok: false, error: 'Source not found' });
+      }
+      app.log.error(error);
+      return reply.status(500).send({ ok: false, error: 'Internal server error' });
+    }
   });
 }

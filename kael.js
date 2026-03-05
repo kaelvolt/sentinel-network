@@ -369,7 +369,7 @@ Project state: ${state.typeErrors} type errors. Packages: ${state.packages.join(
 Operator work queue:
 ${queueText}
 Current focus: ${memory.currentFocus || "general"}
-Recent work: ${workLog.slice(-8).map((w) => \`\${w.action}: \${w.file || w.message || ""}\`).join("; ") || "none"}
+Recent work: ${workLog.slice(-8).map((w) => (w.action + ": " + (w.file || w.message || ""))).join("; ") || "none"}
 
 Return a JSON array of steps. Each step: { "tool": "name", "args": { ... } }
 
