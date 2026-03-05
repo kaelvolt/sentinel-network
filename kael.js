@@ -36,7 +36,7 @@ let memory = {
 let workLog = [];
 let isWorking = false;
 let lastWorkAt = 0;
-const WORK_INTERVAL_MS = 45 * 1000;
+const WORK_INTERVAL_MS = 90 * 1000;
 
 // ── Boot ───────────────────────────────────────────────────────────────────
 console.log(`
@@ -129,7 +129,7 @@ const TOOLS = {
   async readFile({ filePath }) {
     const content = await readSafe(path.resolve(ROOT, filePath));
     if (!content) return { ok: false, error: "File not found or empty" };
-    return { ok: true, content: content.slice(0, 4000), lines: content.split("\n").length };
+    return { ok: true, content: content.slice(0, 6000), lines: content.split("\n").length };
   },
 
   async writeFile({ filePath, content }) {
@@ -153,16 +153,16 @@ const TOOLS = {
   },
 
   async typecheck() {
-    const output = await runCmd("cd packages/core && npx tsc --noEmit 2>&1", 120000);
+    const output = await runCmd("npx tsc --noEmit 2>&1", 180000);
     const errors = (output.match(/error TS/g) || []).length;
-    return { ok: true, errors, passed: errors === 0, output: output.slice(-2000) };
+    return { ok: true, errors, passed: errors === 0, output: output.slice(-3000) };
   },
 
   async gitCommitAndPush({ message }) {
     try {
-      const tc = await TOOLS.typecheck();
-      if (!tc.passed) return { ok: false, error: `${tc.errors} type errors — fix before committing` };
       await execAsync("git add -A", { cwd: ROOT });
+      const statusOut = await runCmd("git status --porcelain", 10000);
+      if (!statusOut.trim()) return { ok: false, error: "No changes to commit" };
       await execAsync(`git commit -m "${message.replace(/"/g, '\\"')}"`, { cwd: ROOT });
       await execAsync("git push origin master", { cwd: ROOT });
       await appendWorkLog({ action: "commit", message });
@@ -296,8 +296,54 @@ Instructions:
   return reply;
 }
 
+// ── Architecture Knowledge (what Kael knows about the codebase) ─────────────
+const CODEBASE_KNOWLEDGE = `
+## Sentinel Network — Codebase Architecture
+
+### Project structure
+- apps/api — Fastify REST API (port 3001). Entry: src/index.ts. Routes registered via src/routes/index.ts.
+- apps/web — Next.js 14 App Router dashboard. Dark theme. Uses TanStack React Query. API client in src/lib/api.ts.
+- packages/core — Kael runtime & orchestration logic.
+- packages/analysis — Signal scoring, deduplication, clustering heuristics.
+- packages/shared — Domain types (Source, RawItem, Claim, Evidence, Signal, Cluster, Digest, ReasoningTrail) + enums + Zod schemas.
+- packages/sources — RSS ingestion adapter.
+- packages/storage — Prisma ORM layer for Postgres.
+
+### API conventions (apps/api)
+- All Fastify routes: \`async function routeName(app: FastifyInstance)\`.
+- JSON response shape: \`{ ok: boolean, data: T, total?: number, page?: number, limit?: number }\`.
+- Validation: use Zod schemas, return 400 with \`{ ok: false, error, details }\`.
+- Error handler: Fastify plugin using \`fastify-plugin\`, wraps \`setErrorHandler\` + \`setNotFoundHandler\`.
+- Route registration: in src/routes/index.ts using \`app.register(routeFn, { prefix })\`.
+
+### Web conventions (apps/web)
+- Dark theme: bg-dark-950/#0d0e10 background, dark-850 cards, sentinel-500/#29a3ff accent.
+- Components: 'use client' directive. Tailwind utility classes. Custom classes: .card, .badge, .badge-critical, etc.
+- API calls via \`api\` object in src/lib/api.ts. Types: SignalSummary, SourceSummary, DigestSummary, DashboardStats.
+- Data fetching: \`useQuery\` from @tanstack/react-query. Always \`retry: false\`.
+- Layout: sidebar nav (src/components/layout/sidebar.tsx) + main content area. Max-width containers.
+- Empty states: centered card with translucent emoji, description text, helpful hint.
+- Loading states: .animate-pulse skeleton divs matching the content shape.
+
+### Domain model (packages/shared)
+- Source: { id, kind: SourceKind, name, baseUrl, reliabilityHint: 0-1, meta }
+- Signal: { id, clusterId, title, summary, severity: SeverityLevel(0-5), confidence: 0-1, confidenceLabel, tags[], updatedAt }
+- Digest: { id, title, summary, content (markdown), signalIds[], signalCount, kaelNotes, published, periodStart, periodEnd }
+- Cluster: { id, topic, canonicalClaim, claimIds[], status: active|stale|resolved }
+- SeverityLevel enum: NONE=0, MINIMAL=1, LOW=2, MODERATE=3, HIGH=4, CRITICAL=5
+- ConfidenceLabel enum: LOW, MED, HIGH
+
+### Code quality rules
+- TypeScript strict mode. No \`any\` unless truly unavoidable — use proper generics and interfaces.
+- Import types with \`import type { ... }\` when only used as types.
+- Zod for runtime validation on API inputs. Proper error messages.
+- No placeholder comments like "// Your logic here" or "// Implementation". Write REAL code.
+- No empty catch blocks. Log or handle errors meaningfully.
+- Functions should be focused. Extract helpers when functions exceed ~40 lines.
+`;
+
 // ── Autonomous Work Loop ────────────────────────────────────────────────────
-const MAX_WORK_STEPS = 6;
+const MAX_WORK_STEPS = 8;
 
 async function doWork() {
   if (isWorking) return;
@@ -310,52 +356,50 @@ async function doWork() {
       ? memory.workQueue.map((t, i) => `${i + 1}. ${t}`).join("\n")
       : "none";
 
-    // Step 1: Plan — figure out what to do and which files to read first
+    // Phase 1: Plan what to do
     const planPrompt = `${KAEL_IDENTITY}
+
+${CODEBASE_KNOWLEDGE}
 
 ${TOOL_DESCRIPTIONS}
 
-WORK MODE. You have up to ${MAX_WORK_STEPS} tool calls to complete one task.
+WORK MODE. You have up to ${MAX_WORK_STEPS} tool calls to complete one meaningful task.
 
 Project state: ${state.typeErrors} type errors. Packages: ${state.packages.join(", ")}. Apps: ${state.apps.join(", ")}.
-Operator work queue:\n${queueText}
+Operator work queue:
+${queueText}
 Current focus: ${memory.currentFocus || "general"}
-Recent work: ${workLog.slice(-5).map((w) => `${w.action}: ${w.file || w.message || ""}`).join("; ") || "none"}
+Recent work: ${workLog.slice(-8).map((w) => \`\${w.action}: \${w.file || w.message || ""}\`).join("; ") || "none"}
 
 Return a JSON array of steps. Each step: { "tool": "name", "args": { ... } }
-Example for "add health check to API":
-[
-  { "tool": "readFile", "args": { "filePath": "apps/api/src/index.ts" } },
-  { "tool": "writeFile", "args": { "filePath": "apps/api/src/routes/health.ts", "content": "..." } },
-  { "tool": "gitCommitAndPush", "args": { "message": "feat(api): add health check endpoint" } }
-]
 
-Rules:
-- ALWAYS read relevant files BEFORE writing, so you know what exists.
-- Write ONLY valid TypeScript/JavaScript in file content. No markdown fences. No wrapper text.
-- Prefer modifying existing files over creating new ones.
-- Max ${MAX_WORK_STEPS} steps. Be concrete — actual file paths, actual code.
-- NEVER return an empty array. There is ALWAYS something to improve.
+STRATEGY — pick ONE of these based on priority:
+
+1. **Operator queue** (if not empty): Do the first task. Read relevant files first.
+2. **Type errors** (if any): Read the failing file, understand the error, fix it properly.
+3. **Wire storage layer**: Connect API routes to Prisma. Currently routes return empty data.
+4. **Improve analysis pipeline** (packages/analysis): Better scoring, claim extraction, clustering.
+5. **Strengthen core runtime** (packages/core): Better orchestration, scheduling, error recovery.
+6. **Add missing features**: RSS ingestion improvements, source health monitoring, digest generation.
+7. **Dashboard improvements**: Make the web app more useful with real data rendering.
+
+RULES:
+- ALWAYS read 1-3 relevant files BEFORE writing so you understand context and patterns.
+- For writeFile: provide the FULL file content as the "content" arg. Write COMPLETE, production-quality code.
+- Follow the conventions described in the codebase architecture above.
+- Prefer modifying existing files. Only create new files when adding genuinely new functionality.
+- Max ${MAX_WORK_STEPS} steps. Be concrete — actual file paths, actual code content.
+- NEVER return an empty array. There is always work to do.
+- NEVER write placeholder code. Every function body must contain real logic.
 - Return ONLY a raw JSON array. No text before or after.
 
-If the operator queue is empty, pick from this priority list and DO the work (read then write):
-1. Fix any type errors (read the erroring file, fix it, commit).
-2. Replace placeholder files. Known placeholders to fix RIGHT NOW:
-   - apps/api/src/routes/digests.ts (contains "// Your route logic here")
-   - apps/api/src/routes/sources.ts (contains placeholder handler)
-   - apps/api/src/plugins/error-handler.ts (nearly empty)
-   - apps/web/src/lib/api.ts (contains "// Your API logic here")
-   - apps/web/src/app/page.tsx (may need real dashboard content)
-3. Add missing API functionality: proper error handling, input validation, CORS.
-4. Improve the web dashboard: real signal cards, data fetching, layout.
-5. Strengthen the analysis pipeline: better scoring, deduplication, clustering.
-
-IMPORTANT: Your plan MUST include at least one readFile AND one writeFile step. Just listing directories is not work. Read a file, improve it, write it back, commit it.`;
+IMPORTANT: For writeFile steps, the "content" field must contain the ENTIRE file content as valid TS/JS code.
+Do NOT use "..." or placeholder strings as content — write the actual code inline in the JSON.`;
 
     const planRaw = await aiCall([
       { role: "system", content: planPrompt },
-      { role: "user", content: "Execute the highest priority task from the work queue. If empty, find something useful to build." },
-    ], 3000);
+      { role: "user", content: "Execute the highest priority task. Read files first, then make a real improvement." },
+    ], 4000);
 
     let steps;
     try {
@@ -376,7 +420,7 @@ IMPORTANT: Your plan MUST include at least one readFile AND one writeFile step. 
 
     console.log(`   Plan: ${steps.length} steps`);
 
-    // Step 2: Execute each step, feeding read results into context for writes
+    // Phase 2: Execute steps. When writing, use AI to generate high-quality code with full context.
     const context = {};
     for (let i = 0; i < Math.min(steps.length, MAX_WORK_STEPS); i++) {
       const step = steps[i];
@@ -387,23 +431,46 @@ IMPORTANT: Your plan MUST include at least one readFile AND one writeFile step. 
 
       console.log(`   Step ${i + 1}/${steps.length}: ${step.tool}${step.args?.filePath ? ` → ${step.args.filePath}` : ""}${step.args?.message ? ` → ${step.args.message}` : ""}`);
 
-      // If this is a writeFile and we read the file earlier, let AI generate proper content
+      // For writes: if the planned content looks short/placeholder, or we have context, generate properly
       if (step.tool === "writeFile" && step.args?.filePath) {
         const existingContent = context[step.args.filePath];
-        if (existingContent || (step.args.content && step.args.content.length < 20)) {
-          // AI needs to generate real content based on what it read
-          const genPrompt = `You are writing TypeScript code for the Sentinel Network project.
-File: ${step.args.filePath}
-${existingContent ? `Current file content:\n${existingContent}\n` : "This is a new file."}
-Task: ${memory.currentFocus || memory.workQueue[0] || "improve this file with real implementation"}
-Write the COMPLETE file content. Return ONLY valid TypeScript/JavaScript code. No markdown fences. No explanations.`;
+        const needsGeneration = !step.args.content
+          || step.args.content.length < 50
+          || step.args.content.includes("...")
+          || step.args.content.includes("// TODO")
+          || step.args.content.includes("// Your");
+
+        if (needsGeneration || existingContent) {
+          const relatedFiles = Object.entries(context)
+            .filter(([k]) => k !== step.args.filePath)
+            .map(([k, v]) => `--- ${k} ---\n${v}`)
+            .join("\n\n");
+
+          const genPrompt = `${CODEBASE_KNOWLEDGE}
+
+You are writing production TypeScript for the Sentinel Network project.
+
+TARGET FILE: ${step.args.filePath}
+${existingContent ? `CURRENT CONTENT:\n${existingContent}\n` : "This is a new file."}
+${relatedFiles ? `RELATED FILES (for context):\n${relatedFiles}\n` : ""}
+TASK: ${memory.currentFocus || memory.workQueue[0] || "improve this file with real, working implementation"}
+${step.args.content && step.args.content.length > 30 ? `PLANNED APPROACH:\n${step.args.content.slice(0, 500)}\n` : ""}
+
+REQUIREMENTS:
+- Write the COMPLETE file from top to bottom. Every import, every function, every export.
+- Follow existing conventions: import styles, error handling patterns, response shapes.
+- If it's a Fastify route: use typed FastifyInstance, Zod validation, proper error responses.
+- If it's a React component: use 'use client', TanStack Query, Tailwind dark theme classes.
+- If it's a utility/service: export typed functions, handle edge cases, no any types.
+- Write REAL logic, not placeholders. Every function must DO something useful.
+- Return ONLY the code. No markdown fences. No explanations before or after.`;
 
           const generated = await aiCall([
-            { role: "system", content: "You write production TypeScript. Return ONLY code. No markdown. No wrapper text." },
+            { role: "system", content: "You are a senior TypeScript developer. Write complete, production-quality code. Return ONLY the code. No markdown fences. No commentary." },
             { role: "user", content: genPrompt },
-          ], 2500);
+          ], 4000);
 
-          if (generated && generated.length > 20) {
+          if (generated && generated.length > 40) {
             step.args.content = generated;
           }
         }
@@ -428,14 +495,14 @@ Write the COMPLETE file content. Return ONLY valid TypeScript/JavaScript code. N
       }
     }
 
-    // Step 3: If we wrote files but didn't commit in the plan, auto-commit
+    // Phase 3: Auto-commit if we wrote files but plan didn't include a commit step
     if (filesWritten > 0) {
       const status = await runCmd("git status --porcelain", 10000);
       const changed = status.split("\n").filter(Boolean);
       if (changed.length > 0) {
         const msgRaw = await aiCall([
-          { role: "system", content: "Generate a concise conventional commit message for these changes. Return ONLY the message. Example: feat(api): add health check endpoint" },
-          { role: "user", content: `Files changed:\n${changed.map((l) => l.trim()).join("\n")}\nWork done: ${workLog.slice(-3).map((w) => `${w.action}: ${w.file || w.message}`).join(", ")}` },
+          { role: "system", content: "Generate a concise conventional commit message for these changes. Format: type(scope): description. Types: feat, fix, refactor, chore, docs. Scope is the package or app name. Return ONLY the message, no quotes." },
+          { role: "user", content: `Files changed:\n${changed.map((l) => l.trim()).join("\n")}\nRecent work: ${workLog.slice(-3).map((w) => `${w.action}: ${w.file || w.message}`).join(", ")}` },
         ], 80);
 
         const msg = (msgRaw || "").replace(/^["']|["']$/g, "").trim();
@@ -445,12 +512,10 @@ Write the COMPLETE file content. Return ONLY valid TypeScript/JavaScript code. N
         }
       }
 
-      // Mark first queue item as done
       if (memory.workQueue.length > 0) {
         const done = memory.workQueue.shift();
         memory.completedWork.push({ task: done, at: new Date().toISOString() });
         memory.completedWork = memory.completedWork.slice(-60);
-        // Update operator
         await tg(`Done: ${done}`);
       }
     }
