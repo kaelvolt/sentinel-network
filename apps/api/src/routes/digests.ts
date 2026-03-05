@@ -11,6 +11,19 @@ const DigestIdSchema = z.object({
   id: z.string().uuid(),
 });
 
+const DigestSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  summary: z.string(),
+  content: z.string(),
+  signalIds: z.array(z.string()),
+  signalCount: z.number(),
+  kaelNotes: z.string(),
+  published: z.date(),
+  periodStart: z.date(),
+  periodEnd: z.date(),
+});
+
 export default async function digestRoutes(fastify: FastifyInstance) {
   fastify.get('/digests', async (request, reply) => {
     const { page, limit } = DigestQuerySchema.parse(request.query);
@@ -83,7 +96,7 @@ export default async function digestRoutes(fastify: FastifyInstance) {
 
       return {
         ok: true,
-        data: digest,
+        data: DigestSchema.parse(digest),
       };
     } catch (error) {
       fastify.log.error(error);
