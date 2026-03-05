@@ -7,6 +7,10 @@ const DigestQuerySchema = z.object({
   limit: z.number().optional().default(10),
 });
 
+const DigestIdSchema = z.object({
+  id: z.string().uuid(),
+});
+
 export default async function digestRoutes(fastify: FastifyInstance) {
   fastify.get('/digests', async (request, reply) => {
     const { page, limit } = DigestQuerySchema.parse(request.query);
@@ -52,6 +56,34 @@ export default async function digestRoutes(fastify: FastifyInstance) {
       return {
         ok: true,
         data: latestDigest,
+      };
+    } catch (error) {
+      fastify.log.error(error);
+      return reply.status(500).send({
+        ok: false,
+        error: 'Internal Server Error',
+      });
+    }
+  });
+
+  fastify.get('/digests/:id', async (request, reply) => {
+    const { id } = DigestIdSchema.parse(request.params);
+
+    try {
+      const digest = await prisma.digest.findUnique({
+        where: { id },
+      });
+
+      if (!digest) {
+        return reply.status(404).send({
+          ok: false,
+          error: 'Digest not found',
+        });
+      }
+
+      return {
+        ok: true,
+        data: digest,
       };
     } catch (error) {
       fastify.log.error(error);

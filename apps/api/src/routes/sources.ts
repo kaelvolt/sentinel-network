@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '@sentinel/storage';
+import type { Source } from '@sentinel/shared';
 
 const SourceQuerySchema = z.object({
   page: z.number().optional().default(1),
