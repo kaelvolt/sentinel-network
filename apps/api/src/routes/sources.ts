@@ -1,6 +1,11 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { db } from '@sentinel/storage';
+import { prisma } from '@sentinel/storage';
+
+const SourceQuerySchema = z.object({
+  page: z.number().optional().default(1),
+  limit: z.number().optional().default(10),
+});
 
 const CreateSourceSchema = z.object({
   name: z.string().min(1).max(200),
@@ -13,16 +18,17 @@ const CreateSourceSchema = z.object({
 type CreateSourceBody = z.infer<typeof CreateSourceSchema>;
 
 export async function sourcesRoutes(app: FastifyInstance) {
-  app.get('/', async (request: FastifyRequest<{ Querystring: { page?: string; limit?: string } }>, reply) => {
-    const page = Math.max(1, parseInt(request.query.page || '1', 10));
-    const limit = Math.min(100, Math.max(1, parseInt(request.query.limit || '50', 10)));
-
+  app.get('/', async (request: FastifyRequest<{ Querystring: z.infer<typeof SourceQuerySchema> }>, reply) => {
+    const { page, limit } = SourceQuerySchema.parse(request.query);
+    
     try {
-      const sources = await db.source.findMany({
-        skip: (page - 1) * limit,
-        take: limit,
-      });
-      const total = await db.source.count();
+      const [sources, total] = await Promise.all([
+        prisma.source.findMany({
+          skip: (page - 1) * limit,
+          take: limit,
+        }),
+        prisma.source.count(),
+      ]);
 
       return {
         ok: true,
@@ -45,7 +51,7 @@ export async function sourcesRoutes(app: FastifyInstance) {
     }
 
     try {
-      const source = await db.source.findUnique({ where: { id } });
+      const source = await prisma.source.findUnique({ where: { id } });
       if (!source) {
         return reply.status(404).send({ ok: false, error: 'Source not found' });
       }
@@ -68,7 +74,7 @@ export async function sourcesRoutes(app: FastifyInstance) {
     }
 
     try {
-      const source = await db.source.create({ data: parsed.data });
+      const source = await prisma.source.create({ data: parsed.data });
       return reply.status(201).send({ ok: true, data: source });
     } catch (error) {
       app.log.error(error);
@@ -84,7 +90,7 @@ export async function sourcesRoutes(app: FastifyInstance) {
     }
 
     try {
-      const source = await db.source.delete({ where: { id } });
+      const source = await prisma.source.delete({ where: { id } });
       return reply.send({ ok: true, data: source });
     } catch (error) {
       if (error.code === 'P2025') {

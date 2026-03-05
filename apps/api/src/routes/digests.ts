@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { db } from '@sentinel/storage';
+import { prisma } from '@sentinel/storage';
 
 const DigestQuerySchema = z.object({
   page: z.number().optional().default(1),
@@ -12,11 +12,13 @@ export default async function digestRoutes(fastify: FastifyInstance) {
     const { page, limit } = DigestQuerySchema.parse(request.query);
     
     try {
-      const digests = await db.digest.findMany({
-        skip: (page - 1) * limit,
-        take: limit,
-      });
-      const total = await db.digest.count();
+      const [digests, total] = await Promise.all([
+        prisma.digest.findMany({
+          skip: (page - 1) * limit,
+          take: limit,
+        }),
+        prisma.digest.count(),
+      ]);
 
       return {
         ok: true,
@@ -36,7 +38,7 @@ export default async function digestRoutes(fastify: FastifyInstance) {
 
   fastify.get('/digests/latest', async (_request, reply) => {
     try {
-      const latestDigest = await db.digest.findFirst({
+      const latestDigest = await prisma.digest.findFirst({
         orderBy: { published: 'desc' },
       });
 
