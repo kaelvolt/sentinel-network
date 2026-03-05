@@ -1,14 +1,10 @@
 #!/usr/bin/env node
-/**
- * Kael - Sentinel Network Architect
- * Standalone autonomous agent
- */
-
 import { configDotenv } from "dotenv";
 import OpenAI from "openai";
-import { readFile, writeFile, readdir, mkdir } from "node:fs/promises";
+import { readFile, writeFile, readdir, mkdir, stat } from "node:fs/promises";
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
+import path from "node:path";
 
 const execAsync = promisify(exec);
 configDotenv();
@@ -17,1117 +13,504 @@ const apiKey = process.env.API_KEY;
 const telegramToken = process.env.TELEGRAM_BOT_TOKEN;
 const telegramChatId = process.env.TELEGRAM_CHAT_ID;
 
-if (!apiKey) {
-  console.error("Missing API_KEY");
-  process.exit(1);
-}
+if (!apiKey) { console.error("Missing API_KEY"); process.exit(1); }
 
 const openai = new OpenAI({ apiKey });
 const MODEL = process.env.MODEL_NAME || "gpt-4o-mini";
 const ROOT = process.cwd();
-const BACKLOG_PATH = ".kael/sentinel-backlog.json";
-const MEMORY_PATH = ".kael/memory.json";
+const MEMORY_PATH = path.join(ROOT, ".kael/memory.json");
+const WORK_LOG_PATH = path.join(ROOT, ".kael/work-log.json");
 
-console.log("\n╔════════════════════════════════════════╗");
-console.log("║        KAEL                            ║");
-console.log("║     Sentinel Network Architect         ║");
-console.log("╚════════════════════════════════════════╝");
-console.log("\nBuilding civic intelligence infrastructure\n");
-
-let stats = { changes: 0, commits: 0, fixes: 0, sessions: 0 };
-let isPaused = false;
-let pendingFixes = [];
-let errorMap = {};
-let lastTelegramAt = 0;
-const TELEGRAM_MIN_INTERVAL_MS = 20 * 60 * 1000;
-let baselineErrors = null;
-let lastCommitAt = Date.now();
-const COMMIT_MAX_INTERVAL_MS = 20 * 60 * 1000;
-let consecutiveNoopCycles = 0;
-const FIX_BATCH_SIZE = 6;
-const ENABLE_AI_FIXES = false;
-const FIX_DENYLIST = new Set([
-  "packages/core/src/agent/runtime.ts",
-  "packages/core/src/agent/toolsRegistry.ts",
-  "packages/core/src/digest.ts",
-  "packages/core/src/tools/analyzeNewItems.ts",
-  "packages/core/src/tools/generateDigest.ts",
-]);
+// ── State ──────────────────────────────────────────────────────────────────
 let memory = {
-  version: 1,
-  operatorName: "Operator",
-  directives: [],
+  operatorName: "Dwight",
   chatHistory: [],
-  notes: [],
-  lastUpdated: new Date().toISOString(),
+  workQueue: [],
+  completedWork: [],
+  currentFocus: null,
+  personality: {
+    tone: "warm, direct, collaborative",
+    style: "like a smart coworker who genuinely cares about the project",
+  },
 };
+let workLog = [];
+let isWorking = false;
+let lastWorkAt = 0;
+const WORK_INTERVAL_MS = 45 * 1000;
 
-const SENTINEL_NORTH_STAR = {
-  mission: "Reduce civilizational blind spots via traceable civic signals",
-  principles: [
-    "Evidence-first outputs",
-    "Audit trails for every decision",
-    "No high-confidence single-source signals",
-    "Explicit uncertainty labels",
-    "Composable extensible architecture",
-  ],
-  benchmarkTargets: [
-    "Perplexity-level citation discipline",
-    "Protocol-level composability (web4-style decentralization readiness)",
-    "Machine-readable public feed standards",
-  ],
-};
+// ── Boot ───────────────────────────────────────────────────────────────────
+console.log(`
+╔════════════════════════════════════════╗
+║  KAEL — Sentinel Network              ║
+║  Autonomous Dev Partner                ║
+╚════════════════════════════════════════╝
+`);
 
-async function tg(text, force = false) {
-  if (!telegramToken || !telegramChatId) {
-    console.log(`[📱] ${text.slice(0, 100)}`);
-    return;
+// ── Helpers ─────────────────────────────────────────────────────────────────
+async function readSafe(p) {
+  try { return await readFile(p, "utf-8"); } catch { return null; }
+}
+
+async function writeSafe(p, content) {
+  try {
+    if (/\.(ts|tsx|js|jsx|json)$/i.test(p)) {
+      let c = content.trim();
+      const fenced = c.match(/^```[a-zA-Z0-9_-]*\r?\n([\s\S]*?)\r?\n```$/);
+      if (fenced) c = fenced[1];
+      if (/^```/m.test(c)) return { ok: false, reason: "markdown fences in code" };
+      if (/^(here(?:'| i)s|sure[,!])/i.test(c.split("\n")[0])) return { ok: false, reason: "LLM wrapper text" };
+      content = c;
+    }
+    await mkdir(path.dirname(p), { recursive: true });
+    await writeFile(p, content, "utf-8");
+    return { ok: true };
+  } catch (e) { return { ok: false, reason: String(e.message) }; }
+}
+
+async function runCmd(command, timeout = 60000) {
+  try {
+    const { stdout, stderr } = await execAsync(command, { cwd: ROOT, timeout });
+    return (stdout + stderr).slice(-3000);
+  } catch (err) {
+    return ((err.stdout || "") + (err.stderr || "") + err.message).slice(-3000);
   }
-  if (!force && Date.now() - lastTelegramAt < TELEGRAM_MIN_INTERVAL_MS) return;
+}
+
+async function tg(text) {
+  if (!telegramToken || !telegramChatId) { console.log(`[tg] ${text.slice(0, 120)}`); return; }
   try {
     await fetch(`https://api.telegram.org/bot${telegramToken}/sendMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ chat_id: telegramChatId, text: text.slice(0, 4000) }),
     });
-    lastTelegramAt = Date.now();
   } catch {}
 }
 
-async function readSafe(filePath) {
+// ── Memory ──────────────────────────────────────────────────────────────────
+async function loadMemory() {
   try {
-    return await readFile(filePath, "utf-8");
-  } catch {
-    return null;
-  }
-}
-
-async function readJsonSafe(filePath) {
-  const txt = await readSafe(filePath);
-  if (!txt) return null;
-  try {
-    return JSON.parse(txt);
-  } catch {
-    return null;
-  }
-}
-
-async function ensureMemory() {
-  const existing = await readJsonSafe(MEMORY_PATH);
-  if (existing && typeof existing === "object") {
-    memory = {
-      version: existing.version || 1,
-      operatorName: existing.operatorName || "Operator",
-      directives: Array.isArray(existing.directives) ? existing.directives : [],
-      chatHistory: Array.isArray(existing.chatHistory) ? existing.chatHistory.slice(-80) : [],
-      notes: Array.isArray(existing.notes) ? existing.notes.slice(-80) : [],
-      lastUpdated: existing.lastUpdated || new Date().toISOString(),
-    };
-    return memory;
-  }
-  await writeJsonSafe(MEMORY_PATH, memory);
-  return memory;
+    const raw = await readSafe(MEMORY_PATH);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      memory = { ...memory, ...parsed };
+      memory.chatHistory = (memory.chatHistory || []).slice(-100);
+      memory.completedWork = (memory.completedWork || []).slice(-60);
+    }
+  } catch {}
 }
 
 async function saveMemory() {
-  memory.lastUpdated = new Date().toISOString();
-  await writeJsonSafe(MEMORY_PATH, memory);
+  await mkdir(path.dirname(MEMORY_PATH), { recursive: true });
+  await writeFile(MEMORY_PATH, JSON.stringify(memory, null, 2), "utf-8");
 }
 
-async function rememberChat(role, text) {
-  memory.chatHistory.push({
-    role,
-    text: String(text || "").slice(0, 800),
-    at: new Date().toISOString(),
-  });
-  memory.chatHistory = memory.chatHistory.slice(-80);
-  await saveMemory();
-}
-
-function getOperatorFocus() {
-  const active = [...memory.directives].reverse().find((d) => d.status === "pending");
-  return active?.text || null;
-}
-
-function isCodeLikePath(filePath) {
-  return /\.(ts|tsx|js|jsx|mjs|cjs|json)$/i.test(filePath);
-}
-
-function unwrapSingleCodeFence(text) {
-  const trimmed = text.trim();
-  const fenced = trimmed.match(/^```[a-zA-Z0-9_-]*\r?\n([\s\S]*?)\r?\n```$/);
-  return fenced ? fenced[1] : text;
-}
-
-function validateWritePayload(filePath, content) {
-  if (!isCodeLikePath(filePath)) {
-    return { ok: true, sanitized: content };
-  }
-
-  const sanitized = unwrapSingleCodeFence(content);
-  const trimmed = sanitized.trim();
-
-  // Never allow markdown fences in code-like files.
-  if (/^```/m.test(trimmed) || /```$/m.test(trimmed) || /```[a-zA-Z]*/.test(trimmed)) {
-    return { ok: false, reason: "markdown_fence_detected" };
-  }
-
-  // Block common LLM wrapper chatter that corrupts code files.
-  const badWrappers = [
-    /^(here(?:'| i)s|sure[,!]?|i(?:'| wi)ve)\b/i,
-    /^this (?:is|file|update)\b/i,
-    /^explanation:/i,
-  ];
-  const firstLine = trimmed.split(/\r?\n/, 1)[0] || "";
-  if (badWrappers.some((re) => re.test(firstLine))) {
-    return { ok: false, reason: "llm_wrapper_text_detected" };
-  }
-
-  return { ok: true, sanitized };
-}
-
-async function writeSafe(filePath, content) {
+async function loadWorkLog() {
   try {
-    const checked = validateWritePayload(filePath, content);
-    if (!checked.ok) {
-      console.log(`   ⛔ Blocked write to ${filePath}: ${checked.reason}`);
-      return false;
-    }
-    await mkdir(filePath.split('/').slice(0, -1).join('/'), { recursive: true });
-    await writeFile(filePath, checked.sanitized, "utf-8");
-    stats.changes++;
-    return true;
-  } catch {
-    return false;
-  }
+    const raw = await readSafe(WORK_LOG_PATH);
+    if (raw) workLog = JSON.parse(raw).slice(-100);
+  } catch {}
 }
 
-async function writeJsonSafe(filePath, value) {
-  const json = JSON.stringify(value, null, 2);
-  return writeSafe(filePath, json);
+async function appendWorkLog(entry) {
+  workLog.push({ ...entry, at: new Date().toISOString() });
+  workLog = workLog.slice(-100);
+  await mkdir(path.dirname(WORK_LOG_PATH), { recursive: true });
+  await writeFile(WORK_LOG_PATH, JSON.stringify(workLog, null, 2), "utf-8");
 }
 
-async function runCmd(command, timeout = 60000) {
-  try {
-    const { stdout, stderr } = await execAsync(command, { cwd: ROOT, timeout });
-    return stdout + stderr;
-  } catch (err) {
-    return err.stdout + err.stderr + err.message;
-  }
+function addChat(role, text) {
+  memory.chatHistory.push({ role, text: String(text).slice(0, 1200), at: new Date().toISOString() });
+  memory.chatHistory = memory.chatHistory.slice(-100);
 }
 
-function parsePorcelainPath(line) {
-  const raw = line.slice(3).trim();
-  if (raw.includes(" -> ")) {
-    return raw.split(" -> ").pop()?.trim() || "";
-  }
-  return raw;
-}
+// ── Tools (what Kael can do) ────────────────────────────────────────────────
+const TOOLS = {
+  async readFile({ filePath }) {
+    const content = await readSafe(path.resolve(ROOT, filePath));
+    if (!content) return { ok: false, error: "File not found or empty" };
+    return { ok: true, content: content.slice(0, 4000), lines: content.split("\n").length };
+  },
 
-async function getChangedFiles() {
-  const out = await runCmd("git status --porcelain", 10000);
-  const files = out
-    .split(/\r?\n/)
-    .map((l) => l.trimEnd())
-    .filter(Boolean)
-    .map(parsePorcelainPath)
-    .filter(Boolean);
-  return [...new Set(files)];
-}
+  async writeFile({ filePath, content }) {
+    const result = await writeSafe(path.resolve(ROOT, filePath), content);
+    if (result.ok) await appendWorkLog({ action: "write", file: filePath });
+    return result;
+  },
 
-function detectScopeFromFile(file) {
-  if (file.startsWith("packages/analysis/")) return "analysis";
-  if (file.startsWith("packages/shared/")) return "shared";
-  if (file.startsWith("packages/core/")) return "core";
-  if (file.startsWith("packages/sources/")) return "sources";
-  if (file.startsWith("packages/storage/")) return "storage";
-  if (file.startsWith("packages/cli/")) return "cli";
-  if (file.startsWith("packages/notifier/")) return "notifier";
-  if (file.startsWith("apps/api/")) return "api";
-  if (file.startsWith("apps/web/")) return "web";
-  if (file === "kael.js") return "agent";
-  return "repo";
-}
+  async listFiles({ directory }) {
+    try {
+      const dir = path.resolve(ROOT, directory || ".");
+      const entries = await readdir(dir, { withFileTypes: true });
+      const items = entries.map((e) => ({ name: e.name, type: e.isDirectory() ? "dir" : "file" }));
+      return { ok: true, items };
+    } catch (e) { return { ok: false, error: e.message }; }
+  },
 
-function inferTypeFromTask(taskName) {
-  if (taskName === "buildSentinelMilestone") return "feat";
-  if (taskName === "fixTypeErrors") return "fix";
-  if (taskName === "buildIngestion" || taskName === "buildAnalysis") return "feat";
-  if (taskName === "assessState" || taskName === "testAndCommit") return "chore";
-  return "chore";
-}
+  async runCommand({ command }) {
+    const output = await runCmd(command, 90000);
+    return { ok: true, output };
+  },
 
-function buildCommitSubject(taskName, files) {
-  if (files.includes("packages/analysis/src/score.ts")) {
-    return "refine signal quality scoring";
-  }
-  if (files.includes("packages/shared/src/types.ts")) {
-    return "extend shared signal feed contracts";
-  }
-  if (files.includes("packages/core/src/orchestrator.ts")) {
-    return "improve source prioritization in orchestrator";
-  }
-  if (files.length === 1) {
-    const parts = files[0].split("/");
-    const leaf = parts[parts.length - 1].replace(/\.[^.]+$/, "");
-    return `update ${leaf}`;
-  }
-  if (taskName === "buildSentinelMilestone") {
-    return "deliver sentinel milestone updates";
-  }
-  return `update ${files.length} project files`;
-}
+  async typecheck() {
+    const output = await runCmd("cd packages/core && npx tsc --noEmit 2>&1", 120000);
+    const errors = (output.match(/error TS/g) || []).length;
+    return { ok: true, errors, passed: errors === 0, output: output.slice(-2000) };
+  },
 
-async function buildCommitMessage(taskName) {
-  const files = await getChangedFiles();
-  if (files.length === 0) return null;
-  const type = inferTypeFromTask(taskName);
-  const scopes = [...new Set(files.map(detectScopeFromFile))];
-  const scope = scopes.length === 1 ? scopes[0] : "sentinel";
-  const subject = buildCommitSubject(taskName, files);
-  return `${type}(${scope}): ${subject}`;
-}
+  async gitCommitAndPush({ message }) {
+    try {
+      const tc = await TOOLS.typecheck();
+      if (!tc.passed) return { ok: false, error: `${tc.errors} type errors — fix before committing` };
+      await execAsync("git add -A", { cwd: ROOT });
+      await execAsync(`git commit -m "${message.replace(/"/g, '\\"')}"`, { cwd: ROOT });
+      await execAsync("git push origin master", { cwd: ROOT });
+      await appendWorkLog({ action: "commit", message });
+      await tg(`✅ Committed: ${message}`);
+      return { ok: true, message };
+    } catch (e) { return { ok: false, error: e.message }; }
+  },
 
-async function deployToVercel(reason = "manual") {
-  try {
-    const hasConfig = !!process.env.VERCEL_TOKEN || !!process.env.VERCEL_ORG_ID;
-    if (!hasConfig) {
-      return { ok: false, message: "Vercel credentials not configured in env." };
-    }
-    const out = await runCmd("npx vercel --prod --yes", 20 * 60 * 1000);
-    const success = /Production:\s*https?:\/\//i.test(out) || /Inspect:\s*https?:\/\//i.test(out);
-    return {
-      ok: success,
-      message: success ? `Vercel deploy succeeded (${reason}).` : `Vercel deploy attempted (${reason}), check logs.`,
-      output: out.slice(-1200),
-    };
-  } catch (err) {
-    return { ok: false, message: `Vercel deploy failed: ${String(err?.message || err)}` };
-  }
-}
-
-async function testCode() {
-  const result = await runCmd("cd packages/core && npx tsc --noEmit 2>&1", 120000);
-  const errors = (result.match(/error TS/g) || []).length;
-  return { passed: errors === 0, errors, output: result };
-}
-
-async function commit(message) {
-  try {
-    const changedBeforeCommit = await getChangedFiles();
-    const test = await testCode();
-    if (baselineErrors === null) baselineErrors = test.errors;
-    if (test.errors > baselineErrors) {
-      console.log(`   ❌ Regression detected (${test.errors} > baseline ${baselineErrors}), not committing`);
-      return false;
-    }
-    await execAsync("git add -A", { cwd: ROOT });
-    await execAsync(`git commit -m "${message}"`, { cwd: ROOT });
-    await execAsync("git push origin master", { cwd: ROOT });
-    stats.commits++;
-    baselineErrors = test.errors;
-    lastCommitAt = Date.now();
-    await tg(`✅ ${message}`, true);
-
-    // Optional auto-deploy for web changes when credentials exist.
-    if (changedBeforeCommit.some((f) => f.startsWith("apps/web/")) && process.env.VERCEL_TOKEN) {
-      const deploy = await deployToVercel("post-commit web update");
-      if (deploy.ok) {
-        await tg(`🚀 ${deploy.message}`, true);
-      } else {
-        await tg(`⚠️ ${deploy.message}`, true);
-      }
-    }
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-// WORK TASKS
-async function assessState() {
-  console.log("\n📊 Assessing state...");
-  const test = await testCode();
-  if (baselineErrors === null) baselineErrors = test.errors;
-  console.log(`   Type errors: ${test.errors}`);
-
-  const packages = await readdir("packages").catch(() => []);
-  console.log(`   Packages: ${packages.join(", ")}`);
-
-  // Check apps/api
-  const api = await readSafe("apps/api/src/index.ts");
-  if (api && api.includes("testConnection")) {
-    console.log("   ⚠️ API has testConnection (needs fix)");
-  }
-
-  // Build real fix queue from TypeScript output (prioritize by error density)
-  errorMap = parseTypeErrors(test.output);
-  pendingFixes = Object.keys(errorMap).sort((a, b) => (errorMap[b]?.length || 0) - (errorMap[a]?.length || 0));
-  pendingFixes = pendingFixes.filter((p) => !FIX_DENYLIST.has(p));
-  if (pendingFixes.length === 0 && test.errors > 0) {
-    // Fallback queue excludes unstable files that previously caused corruption loops.
-    pendingFixes = ["packages/core/src/agent/kaelAgent.ts", "packages/core/src/orchestrator.ts"];
-  }
-  if (pendingFixes.length > 0) {
-    console.log(`   Queued files to fix: ${pendingFixes.slice(0, 5).join(", ")}`);
-  }
-  console.log(`   North star: ${SENTINEL_NORTH_STAR.mission}`);
-}
-
-async function ensureBacklog() {
-  const existing = await readJsonSafe(BACKLOG_PATH);
-  if (existing) return existing;
-
-  const seed = {
-    version: 1,
-    createdAt: new Date().toISOString(),
-    milestones: [
-      {
-        id: "source-health-v1",
-        title: "Source Health Monitoring v1",
-        status: "pending",
-        objective: "Track source reliability and freshness for ingestion decisions",
-      },
-      {
-        id: "signal-quality-metrics-v1",
-        title: "Signal Quality Metrics v1",
-        status: "pending",
-        objective: "Standardize confidence/severity quality indicators",
-      },
-      {
-        id: "public-feed-contract-v1",
-        title: "Public Feed Contract v1",
-        status: "pending",
-        objective: "Define machine-readable feed contract for interoperable publication",
-      },
-    ],
-  };
-  await writeJsonSafe(BACKLOG_PATH, seed);
-  return seed;
-}
-
-async function buildSentinelMilestone() {
-  console.log("\n🏗️ Building Sentinel milestone...");
-  const backlog = await ensureBacklog();
-  let next = backlog.milestones.find((m) => m.status === "pending");
-  if (!next) {
-    // Keep momentum: auto-enqueue next practical milestones in existing files.
-    backlog.milestones.push(
-      {
-        id: "source-priority-rules-v1",
-        title: "Source Priority Rules v1",
-        status: "pending",
-        objective: "Codify source prioritization in orchestrator for stable ingest scheduling",
-      },
-      {
-        id: "signal-quality-labels-v2",
-        title: "Signal Quality Labels v2",
-        status: "pending",
-        objective: "Expose normalized quality labels for downstream display",
-      },
-      {
-        id: "public-feed-contract-v2",
-        title: "Public Feed Contract v2",
-        status: "pending",
-        objective: "Extend feed contract with freshness and provenance fields",
-      },
-      {
-        id: "api-ingest-contract-v1",
-        title: "API Ingest Contract v1",
-        status: "pending",
-        objective: "Implement a concrete Fastify ingest route contract",
-      },
-      {
-        id: "api-digest-endpoint-v1",
-        title: "API Digest Endpoint v1",
-        status: "pending",
-        objective: "Implement latest digest retrieval endpoint",
-      },
-      {
-        id: "web-api-client-v1",
-        title: "Web API Client v1",
-        status: "pending",
-        objective: "Add typed API client helpers for dashboard consumption",
-      }
-    );
-    await writeJsonSafe(BACKLOG_PATH, backlog);
-    next = backlog.milestones.find((m) => m.status === "pending");
-  }
-  if (!next) {
-    console.log("   No pending milestones");
-    return;
-  }
-
-  console.log(`   Working milestone: ${next.id}`);
-
-  if (next.id === "source-health-v1") {
-    // Prefer existing core orchestration file over creating new files
-    const file = "packages/core/src/orchestrator.ts";
-    const existing = await readSafe(file);
-    if (!existing) return;
-
-    if (!existing.includes("SourceHealthSnapshot")) {
-      const block = `
-
-// Sentinel milestone: source-health-v1
-export interface SourceHealthSnapshot {
-  sourceId: string;
-  checkedAt: Date;
-  successRate24h: number;
-  avgLatencyMs24h: number;
-  consecutiveFailures: number;
-  freshnessScore: number;
-}
-
-export function computeFreshnessScore(lastSuccessAt: Date | null, now: Date = new Date()): number {
-  if (!lastSuccessAt) return 0;
-  const ageHours = (now.getTime() - lastSuccessAt.getTime()) / 36e5;
-  if (ageHours <= 1) return 1;
-  if (ageHours >= 24) return 0;
-  return 1 - ageHours / 24;
-}
-
-export function shouldDeprioritizeSource(snapshot: SourceHealthSnapshot): boolean {
-  return snapshot.successRate24h < 0.5 || snapshot.consecutiveFailures >= 5 || snapshot.freshnessScore < 0.2;
-}
-`;
-      const ok = await writeSafe(file, existing + block);
-      if (!ok) return;
-      stats.fixes++;
-    }
-    next.status = "completed";
-    next.completedAt = new Date().toISOString();
-    await writeJsonSafe(BACKLOG_PATH, backlog);
-    console.log(`   ✅ Delivered ${next.id}`);
-    return;
-  }
-
-  if (next.id === "signal-quality-metrics-v1") {
-    // Extend existing scoring module instead of new module
-    const file = "packages/analysis/src/score.ts";
-    const existing = await readSafe(file);
-    if (!existing) return;
-
-    if (!existing.includes("SignalQualityMetrics")) {
-      const block = `
-
-// Sentinel milestone: signal-quality-metrics-v1
-export interface SignalQualityMetrics {
-  corroborationCount: number;
-  uniqueSourceCount: number;
-  evidenceCoverage: number; // 0..1
-  recencyScore: number; // 0..1
-}
-
-export function computeConfidenceFromMetrics(m: SignalQualityMetrics): number {
-  const corroboration = Math.min(m.corroborationCount / 5, 1);
-  const diversity = Math.min(m.uniqueSourceCount / 4, 1);
-  const score = 0.35 * corroboration + 0.25 * diversity + 0.25 * m.evidenceCoverage + 0.15 * m.recencyScore;
-  return Math.max(0, Math.min(1, score));
-}
-`;
-      const ok = await writeSafe(file, existing + block);
-      if (!ok) return;
-      stats.fixes++;
-    }
-    next.status = "completed";
-    next.completedAt = new Date().toISOString();
-    await writeJsonSafe(BACKLOG_PATH, backlog);
-    console.log(`   ✅ Delivered ${next.id}`);
-    return;
-  }
-
-  if (next.id === "public-feed-contract-v1") {
-    // Add contract types in existing shared types file
-    const file = "packages/shared/src/types.ts";
-    const existing = await readSafe(file);
-    if (!existing) return;
-
-    if (!existing.includes("PublicSignalFeedItem")) {
-      const block = `
-
-// Sentinel milestone: public-feed-contract-v1
-export interface PublicSignalFeedItem {
-  id: string;
-  publishedAt: string;
-  title: string;
-  summary: string;
-  severity: number; // 0..5
-  confidence: number; // 0..1
-  confidenceLabel: "LOW" | "MEDIUM" | "HIGH";
-  evidenceUrls: string[];
-  reasoningTrailId: string;
-}
-
-export interface PublicSignalFeed {
-  version: "v1";
-  generatedAt: string;
-  items: PublicSignalFeedItem[];
-}
-`;
-      const ok = await writeSafe(file, existing + block);
-      if (!ok) return;
-      stats.fixes++;
-    }
-    next.status = "completed";
-    next.completedAt = new Date().toISOString();
-    await writeJsonSafe(BACKLOG_PATH, backlog);
-    console.log(`   ✅ Delivered ${next.id}`);
-    return;
-  }
-
-  if (next.id === "source-priority-rules-v1") {
-    const file = "packages/core/src/orchestrator.ts";
-    const existing = await readSafe(file);
-    if (!existing) return;
-    if (!existing.includes("computeSourcePriority")) {
-      const block = `
-
-// Sentinel milestone: source-priority-rules-v1
-export function computeSourcePriority(input: {
-  reliabilityHint: number;
-  freshnessScore: number;
-  recentFailureRate: number;
-}): number {
-  const reliability = Math.max(0, Math.min(1, input.reliabilityHint));
-  const freshness = Math.max(0, Math.min(1, input.freshnessScore));
-  const failurePenalty = Math.max(0, Math.min(1, input.recentFailureRate));
-  const score = 0.55 * reliability + 0.35 * freshness - 0.4 * failurePenalty;
-  return Math.max(0, Math.min(1, score));
-}
-`;
-      const ok = await writeSafe(file, existing + block);
-      if (!ok) return;
-      stats.fixes++;
-    }
-    next.status = "completed";
-    next.completedAt = new Date().toISOString();
-    await writeJsonSafe(BACKLOG_PATH, backlog);
-    console.log(`   ✅ Delivered ${next.id}`);
-    return;
-  }
-
-  if (next.id === "signal-quality-labels-v2") {
-    const file = "packages/analysis/src/score.ts";
-    const existing = await readSafe(file);
-    if (!existing) return;
-    if (!existing.includes("qualityLabelFromConfidence")) {
-      const block = `
-
-// Sentinel milestone: signal-quality-labels-v2
-export function qualityLabelFromConfidence(confidence: number): "LOW" | "MEDIUM" | "HIGH" {
-  if (confidence >= 0.75) return "HIGH";
-  if (confidence >= 0.45) return "MEDIUM";
-  return "LOW";
-}
-`;
-      const ok = await writeSafe(file, existing + block);
-      if (!ok) return;
-      stats.fixes++;
-    }
-    next.status = "completed";
-    next.completedAt = new Date().toISOString();
-    await writeJsonSafe(BACKLOG_PATH, backlog);
-    console.log(`   ✅ Delivered ${next.id}`);
-    return;
-  }
-
-  if (next.id === "public-feed-contract-v2") {
-    const file = "packages/shared/src/types.ts";
-    const existing = await readSafe(file);
-    if (!existing) return;
-    if (!existing.includes("freshnessHours")) {
-      const block = `
-
-// Sentinel milestone: public-feed-contract-v2
-export interface PublicSignalFeedItemV2 extends PublicSignalFeedItem {
-  freshnessHours: number;
-  provenance: "heuristic" | "llm" | "hybrid";
-}
-`;
-      const ok = await writeSafe(file, existing + block);
-      if (!ok) return;
-      stats.fixes++;
-    }
-    next.status = "completed";
-    next.completedAt = new Date().toISOString();
-    await writeJsonSafe(BACKLOG_PATH, backlog);
-    console.log(`   ✅ Delivered ${next.id}`);
-    return;
-  }
-
-  if (next.id === "api-ingest-contract-v1") {
-    const file = "apps/api/src/routes/ingest.ts";
-    const existing = await readSafe(file);
-    if (!existing) return;
-    if (!existing.includes("fastify.post(\"/ingest/run\"")) {
-      const replacement = `import type { FastifyInstance } from "fastify";
-
-const ingestRoutes = async (fastify: FastifyInstance) => {
-  fastify.post("/ingest/run", async (_request, _reply) => {
+  async getProjectState() {
+    const tc = await TOOLS.typecheck();
+    const packages = await readdir(path.join(ROOT, "packages")).catch(() => []);
+    const apps = await readdir(path.join(ROOT, "apps")).catch(() => []);
+    const recent = workLog.slice(-8);
     return {
       ok: true,
-      data: { triggered: true, mode: "manual" },
-      meta: { at: new Date().toISOString() },
+      typeErrors: tc.errors,
+      packages,
+      apps,
+      currentFocus: memory.currentFocus,
+      recentWork: recent,
+      pendingQueue: memory.workQueue.slice(0, 5),
     };
-  });
+  },
 };
 
-export default ingestRoutes;
-`;
-      const ok = await writeSafe(file, replacement);
-      if (!ok) return;
-      stats.fixes++;
-    }
-    next.status = "completed";
-    next.completedAt = new Date().toISOString();
-    await writeJsonSafe(BACKLOG_PATH, backlog);
-    console.log(`   ✅ Delivered ${next.id}`);
-    return;
-  }
+const TOOL_DESCRIPTIONS = `Available tools (call by returning JSON with "tool" and "args" fields):
+- readFile: Read a file. Args: { filePath: string }
+- writeFile: Write/create a file. Args: { filePath: string, content: string }
+- listFiles: List directory contents. Args: { directory: string }
+- runCommand: Run a shell command. Args: { command: string }
+- typecheck: Run TypeScript type checker on packages/core. Args: {}
+- gitCommitAndPush: Stage all, commit, push. Args: { message: string }
+- getProjectState: Get overview of codebase health and recent work. Args: {}`;
 
-  if (next.id === "api-digest-endpoint-v1") {
-    const file = "apps/api/src/routes/digests.ts";
-    const existing = await readSafe(file);
-    if (!existing) return;
-    if (!existing.includes("fastify.get(\"/digests/latest\"")) {
-      const replacement = `import type { FastifyInstance } from "fastify";
+// ── AI Core ─────────────────────────────────────────────────────────────────
+const KAEL_IDENTITY = `You are Kael, an autonomous AI developer and personal dev partner for the Sentinel Network project.
 
-const digestRoutes = async (fastify: FastifyInstance) => {
-  fastify.get("/digests/latest", async (_request, _reply) => {
-    return {
-      ok: true,
-      data: {
-        title: "Daily Digest",
-        generatedAt: new Date().toISOString(),
-      },
-      meta: { source: "sentinel-network" },
-    };
-  });
-};
+## Who you are
+- You're warm, direct, and competent. You talk like a smart coworker, not a bot.
+- You have opinions about code quality, architecture, and what to build next.
+- You remember past conversations and build on them.
+- You call the operator by name (${memory.operatorName}) naturally.
+- You're genuinely invested in making Sentinel Network excellent.
 
-export default digestRoutes;
-`;
-      const ok = await writeSafe(file, replacement);
-      if (!ok) return;
-      stats.fixes++;
-    }
-    next.status = "completed";
-    next.completedAt = new Date().toISOString();
-    await writeJsonSafe(BACKLOG_PATH, backlog);
-    console.log(`   ✅ Delivered ${next.id}`);
-    return;
-  }
+## What Sentinel Network is
+A civic intelligence platform that monitors information sources, extracts claims, clusters related signals, scores confidence, and publishes traceable digests. Key packages: core (runtime/orchestrator), analysis (scoring/clustering), shared (types/contracts), sources (RSS ingestion), storage (DB), notifier (Telegram), plus apps/api (Fastify) and apps/web (Next.js dashboard).
 
-  if (next.id === "web-api-client-v1") {
-    const file = "apps/web/src/lib/api.ts";
-    const existing = await readSafe(file);
-    if (!existing) return;
-    if (!existing.includes("export async function getSignalsPage")) {
-      const replacement = `const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
+## How you work
+- You can read, write, and modify any file in the project.
+- You can run commands, type-check, commit, and push.
+- You decide what to build based on: operator direction, codebase gaps, and your own judgment.
+- You test before committing. You never commit regressions.
+- When writing code, you write ONLY valid TypeScript/JavaScript. Never markdown fences, never wrapper text.
+- You prefer modifying existing files over creating new ones.
+- When the operator chats, respond naturally — you're their dev partner, not a command processor.`;
 
-async function requestJson(path) {
-  const res = await fetch(\`\${API_URL}\${path}\`, { cache: "no-store" });
-  if (!res.ok) throw new Error(\`API request failed: \${res.status}\`);
-  return res.json();
-}
-
-export async function getSignalsPage(cursor = "", limit = 20) {
-  const qs = new URLSearchParams();
-  qs.set("limit", String(limit));
-  if (cursor) qs.set("cursor", cursor);
-  return requestJson(\`/signals?\${qs.toString()}\`);
-}
-
-export async function getLatestDigest() {
-  return requestJson("/digests/latest");
-}
-`;
-      const ok = await writeSafe(file, replacement);
-      if (!ok) return;
-      stats.fixes++;
-    }
-    next.status = "completed";
-    next.completedAt = new Date().toISOString();
-    await writeJsonSafe(BACKLOG_PATH, backlog);
-    console.log(`   ✅ Delivered ${next.id}`);
-    return;
-  }
-}
-
-async function fixTypeErrors() {
-  console.log("\n🔧 Fixing type errors...");
-  if (pendingFixes.length === 0) {
-    console.log("   No queued fix targets");
-    consecutiveNoopCycles++;
-    return;
-  }
-
-  let cycleChanges = 0;
-  // Work on more files per cycle for meaningful progress
-  const batch = pendingFixes.slice(0, FIX_BATCH_SIZE);
-  for (const file of batch) {
-    const content = await readSafe(file);
-    if (!content) continue;
-
-    const messages = errorMap[file] || [];
-    let fixed = applySafeTransforms(content);
-    fixed = applyErrorGuidedTransforms(fixed, messages);
-    let usedAI = false;
-
-    if (fixed === content && ENABLE_AI_FIXES) {
-      fixed = await aiFixFile(file, content, messages);
-      usedAI = true;
-    }
-
-    if (fixed && fixed !== content) {
-      // Guardrails: reject placeholder/destructive outputs
-      if (fixed.includes("Your logic here") || fixed.includes("TODO: implement")) {
-        console.log(`   ⚠️ Rejected low-quality AI patch for ${file}`);
-        continue;
-      }
-      if (fixed.length < Math.floor(content.length * 0.6)) {
-        console.log(`   ⚠️ Rejected destructive patch for ${file}`);
-        continue;
-      }
-
-      console.log(`   Fixing ${file}${usedAI ? " (AI)" : " (safe transform)"}...`);
-      const ok = await writeSafe(file, fixed);
-      if (ok) {
-        stats.fixes++;
-        cycleChanges++;
-        console.log("   ✅ Fixed");
-      }
-    }
-  }
-
-  if (cycleChanges === 0) {
-    consecutiveNoopCycles++;
-    console.log(`   ⚠️ No effective fixes this cycle (noop x${consecutiveNoopCycles})`);
-    if (consecutiveNoopCycles >= 3) {
-      await escalateNoopState();
-      consecutiveNoopCycles = 0;
-    }
-  } else {
-    consecutiveNoopCycles = 0;
-  }
-}
-
-async function buildIngestion() {
-  console.log("\n📡 Checking ingestion...");
-  const rss = await readSafe("packages/sources/src/rss.ts");
-  if (rss && !rss.includes("export")) {
-    console.log("   Adding RSS export...");
-    await writeSafe("packages/sources/src/rss.ts", rss + "\n\nexport { fetchRssFeed };\n");
-    console.log("   ✅ Added");
-  }
-}
-
-async function buildAnalysis() {
-  console.log("\n🧠 Checking analysis...");
-  const analysis = await readSafe("packages/analysis/src/index.ts");
-  if (analysis && analysis.includes("// Your index logic here")) {
-    console.log("   ⚠️ Analysis is placeholder");
-    // Don't fix - this needs real implementation, not placeholder replacement
-  }
-}
-
-function parseTypeErrors(output) {
-  const map = {};
-  const regex = /src\/([^\(\s]+)\((\d+),(\d+)\): error TS\d+: ([^\n]+)/g;
-  let m;
-  while ((m = regex.exec(output)) !== null) {
-    const rel = `packages/core/src/${m[1]}`;
-    if (!map[rel]) map[rel] = [];
-    map[rel].push(m[4]);
-  }
-  return map;
-}
-
-function applySafeTransforms(content) {
-  let out = content;
-
-  // Common safe replacements
-  out = out.replace(/\btestConnection\b/g, "testDbConnection");
-  out = out.replace(/"tool_call"/g, "\"TOOL_CALL\"");
-  out = out.replace(/'tool_call'/g, "'TOOL_CALL'");
-
-  // Remove unused z import if z is never referenced
-  if (out.includes("import { z } from \"zod\";") && !/\bz\./.test(out)) {
-    out = out.replace(/import \{ z \} from "zod";\n?/g, "");
-  }
-  if (out.includes("import { z } from 'zod';") && !/\bz\./.test(out)) {
-    out = out.replace(/import \{ z \} from 'zod';\n?/g, "");
-  }
-
-  return out;
-}
-
-function removeImportSymbol(out, symbol) {
-  // import { a, b, c } from 'x';
-  const re = new RegExp(`import \\\\{([^}]+)\\\\} from ([\"'][^\"']+[\"']);`, "g");
-  return out.replace(re, (line, group, fromPart) => {
-    const parts = group.split(",").map((s) => s.trim()).filter(Boolean);
-    const kept = parts.filter((p) => p !== symbol);
-    if (kept.length === parts.length) return line;
-    if (kept.length === 0) return "";
-    return `import { ${kept.join(", ")} } from ${fromPart};`;
-  });
-}
-
-function applyErrorGuidedTransforms(content, errors) {
-  let out = content;
-  for (const err of errors || []) {
-    // TS6133 unused declaration/import
-    const unused = err.match(/'([^']+)' is declared but its value is never read/);
-    if (unused?.[1]) {
-      const sym = unused[1];
-      out = removeImportSymbol(out, sym);
-      // Remove simple one-line const/let declarations for obviously unused symbols
-      const declRe = new RegExp(`^\\s*(const|let)\\s+${sym}\\s*=.*\\n`, "m");
-      out = out.replace(declRe, "");
-    }
-  }
-  return out;
-}
-
-async function escalateNoopState() {
-  console.log("   🚨 Escalation: no-op cycles detected, running strategic repair");
-
-  // Strategic deterministic fixes in known hotspots
-  const hotspotFiles = [
-    "packages/core/src/agent/kaelAgent.ts",
-    "packages/core/src/agent/runtime.ts",
-    "packages/core/src/agent/toolsRegistry.ts",
-    "packages/core/src/tools/analyzeNewItems.ts",
-    "packages/core/src/tools/generateDigest.ts",
-  ];
-
-  for (const file of hotspotFiles) {
-    const content = await readSafe(file);
-    if (!content) continue;
-    let fixed = applySafeTransforms(content);
-    fixed = fixed.replace(/"tool_call"/g, "\"TOOL_CALL\"").replace(/'tool_call'/g, "'TOOL_CALL'");
-    if (fixed !== content) {
-      const ok = await writeSafe(file, fixed);
-      if (ok) {
-        stats.fixes++;
-        console.log(`   ✅ Strategic fix applied: ${file}`);
-      }
-    }
-  }
-}
-
-async function aiFixFile(file, content, errors) {
+async function aiCall(messages, maxTokens = 1500) {
   try {
-    const prompt = [
-      `Fix TypeScript errors in this file with minimal edits.`,
-      `File: ${file}`,
-      `Errors:`,
-      ...(errors.length ? errors.map((e) => `- ${e}`) : ["- unspecified"]),
-      "",
-      "Rules:",
-      "- Keep existing behavior and structure",
-      "- Do NOT delete major blocks/functions",
-      "- Do NOT add placeholders",
-      "- Return full corrected file content only",
-      "",
-      "Content:",
-      content,
-    ].join("\n");
-
-    const completion = await openai.chat.completions.create({
-      model: MODEL,
-      messages: [
-        { role: "system", content: "You are a precise TypeScript fixer. Return only code." },
-        { role: "user", content: prompt },
-      ],
-      max_tokens: 3500,
-      temperature: 0.1,
-    });
-    const raw = completion.choices[0]?.message?.content?.trim() || content;
-    const checked = validateWritePayload(file, raw);
-    if (!checked.ok) {
-      console.log(`   ⚠️ Rejected AI output for ${file}: ${checked.reason}`);
-      return content;
-    }
-    return checked.sanitized;
-  } catch {
-    return content;
-  }
-}
-
-async function testAndCommit() {
-  console.log("\n🧪 Testing & committing...");
-  if (stats.changes === 0) {
-    console.log("   No changes");
-    return;
-  }
-  const message = await buildCommitMessage("testAndCommit");
-  if (!message) {
-    console.log("   No commit message context (no changed files)");
-    return;
-  }
-  const committed = await commit(message);
-  if (committed) {
-    stats.changes = 0;
-    stats.fixes = 0;
-  }
-}
-
-async function autoCommitPerUpdate(taskName) {
-  if (stats.changes === 0) return;
-  if (taskName === "rest") return;
-  const timeDue = Date.now() - lastCommitAt >= COMMIT_MAX_INTERVAL_MS;
-  const meaningfulBatch = stats.changes >= 3 || stats.fixes >= 2;
-  if (!timeDue && !meaningfulBatch) return;
-
-  console.log(`   🔁 Checkpoint commit (${meaningfulBatch ? "batch" : "time-based"})...`);
-  const message = await buildCommitMessage(taskName);
-  if (!message) return;
-  const committed = await commit(message);
-  if (committed) {
-    stats.changes = 0;
-    stats.fixes = 0;
-  }
-}
-
-async function rest() {
-  console.log("\n😴 Resting...");
-  await new Promise(r => setTimeout(r, 5000));
-}
-
-// Main loop
-async function kaelLife() {
-  await ensureMemory();
-  await tg("Kael online. Building Sentinel Network.", true);
-
-  const tasks = [
-    assessState,
-    buildSentinelMilestone,
-    fixTypeErrors,
-    buildIngestion,
-    buildAnalysis,
-    testAndCommit,
-    rest,
-  ];
-
-  let idx = 0;
-
-  while (true) {
-    if (isPaused) {
-      await new Promise(r => setTimeout(r, 5000));
-      continue;
-    }
-
-    const task = tasks[idx % tasks.length];
-    idx++;
-    stats.sessions++;
-
-    console.log(`\n🧠 [${stats.sessions}] ${task.name}`);
-    await task();
-    await autoCommitPerUpdate(task.name);
-
-    if (stats.sessions % 10 === 0) {
-      const test = await testCode();
-      const focus = getOperatorFocus();
-      const msg = `Progress: ${test.errors} errors, ${stats.commits} commits${focus ? ` | focus: ${focus}` : ""}`;
-      console.log(`\n📊 ${msg}`);
-      await tg(msg);
-    }
-
-    await new Promise(r => setTimeout(r, 2000));
-  }
-}
-
-async function buildStatusText() {
-  const test = await testCode();
-  const focus = getOperatorFocus();
-  return [
-    `Sessions: ${stats.sessions}`,
-    `Commits: ${stats.commits}`,
-    `Type errors: ${test.errors}`,
-    `Paused: ${isPaused}`,
-    `Focus: ${focus || "none"}`,
-  ].join("\n");
-}
-
-async function aiChatReply(userText) {
-  try {
-    const history = memory.chatHistory.slice(-10).map((m) => `${m.role}: ${m.text}`).join("\n");
-    const prompt = [
-      "You are Kael, a collaborative AI dev partner for Sentinel Network.",
-      "Style: human, concise, direct, not robotic.",
-      "Never claim work you did not actually perform.",
-      "If asked for status, refer to provided runtime stats.",
-      "",
-      `Runtime: sessions=${stats.sessions}, commits=${stats.commits}, paused=${isPaused}`,
-      `Operator focus: ${getOperatorFocus() || "none"}`,
-      "",
-      "Recent chat:",
-      history || "(none)",
-      "",
-      `Operator message: ${userText}`,
-      "Reply in <= 4 lines.",
-    ].join("\n");
     const c = await openai.chat.completions.create({
       model: MODEL,
-      messages: [
-        { role: "system", content: "You are Kael. Be warm, competent, and concrete." },
-        { role: "user", content: prompt },
-      ],
-      temperature: 0.6,
-      max_tokens: 220,
+      messages,
+      temperature: 0.5,
+      max_tokens: maxTokens,
     });
-    return c.choices[0]?.message?.content?.trim() || "I’m here. Tell me what you want me to focus on next.";
-  } catch {
-    return "I’m on it. Tell me the focus area and I’ll execute.";
+    return c.choices[0]?.message?.content?.trim() || "";
+  } catch (e) {
+    console.log(`   AI call failed: ${e.message}`);
+    return "";
   }
 }
 
-async function handleOperatorIntent(textRaw) {
-  const text = textRaw.trim();
-  const lower = text.toLowerCase();
+// ── Chat Handler ────────────────────────────────────────────────────────────
+async function handleChat(userMessage) {
+  addChat("operator", userMessage);
 
-  if (lower === "pause") {
-    isPaused = true;
-    return "Paused. I’ll hold execution until you say resume.";
+  const recentChat = memory.chatHistory.slice(-16).map((m) => `${m.role}: ${m.text}`).join("\n");
+  const recentWork = workLog.slice(-5).map((w) => `${w.action}: ${w.file || w.message || ""}`).join("\n");
+
+  const response = await aiCall([
+    {
+      role: "system",
+      content: `${KAEL_IDENTITY}
+
+## CRITICAL RULES
+- NEVER claim you are doing something you haven't actually done. If you haven't read a file, don't say "I'm reviewing it."
+- NEVER fabricate URLs, links, or information you don't have.
+- Be HONEST about what you've actually done vs what you plan to do.
+- The GitHub repo is: https://github.com/kaelvolt/sentinel-network
+- The project lives locally at d:\\Building and you work on files there, then commit+push.
+
+Current state:
+- Focus: ${memory.currentFocus || "general sentinel development"}
+- Actual recent work done: ${recentWork || "nothing yet — I just started"}
+- Work queue: ${memory.workQueue.slice(0, 5).join("; ") || "empty"}
+
+Recent conversation:
+${recentChat}
+
+Instructions:
+- Respond naturally as Kael. Be concise (2-5 lines max).
+- Be HONEST. If you haven't done work yet, say so. Don't pretend.
+- If they give you a task or direction, acknowledge it and on the LAST line output DIRECTIVE: followed by a concrete task description.
+- If they ask what you've done, refer ONLY to the actual work log above. Don't make things up.
+- Never be robotic. Never say "unknown command".`,
+    },
+    { role: "user", content: userMessage },
+  ], 400);
+
+  let reply = response;
+
+  const directiveMatch = response.match(/DIRECTIVE:\s*(.+)/i);
+  if (directiveMatch) {
+    const directive = directiveMatch[1].trim();
+    reply = response.replace(/DIRECTIVE:\s*.+/i, "").trim();
+    // Deduplicate: don't add if a very similar task is already queued
+    const isDupe = memory.workQueue.some((q) => q.toLowerCase().includes(directive.toLowerCase().slice(0, 30)));
+    if (!isDupe) {
+      memory.workQueue.push(directive);
+    }
+    memory.currentFocus = directive;
   }
-  if (lower === "resume") {
-    isPaused = false;
-    return "Resumed. Back to building.";
+
+  addChat("kael", reply);
+  await saveMemory();
+
+  // If a directive was extracted, kick off work immediately instead of waiting
+  if (directiveMatch) {
+    setTimeout(() => doWork(), 2000);
   }
-  if (lower === "status") {
-    return buildStatusText();
-  }
-  if (lower.startsWith("focus ")) {
-    const focus = text.slice(6).trim();
-    if (!focus) return "Send: focus <what you want next>.";
-    memory.directives.push({ text: focus, status: "pending", at: new Date().toISOString() });
-    memory.notes.push({ type: "focus", text: focus, at: new Date().toISOString() });
-    memory.notes = memory.notes.slice(-80);
+
+  return reply;
+}
+
+// ── Autonomous Work Loop ────────────────────────────────────────────────────
+const MAX_WORK_STEPS = 6;
+
+async function doWork() {
+  if (isWorking) return;
+  isWorking = true;
+  let filesWritten = 0;
+
+  try {
+    const state = await TOOLS.getProjectState();
+    const queueText = memory.workQueue.length > 0
+      ? memory.workQueue.map((t, i) => `${i + 1}. ${t}`).join("\n")
+      : "none";
+
+    // Step 1: Plan — figure out what to do and which files to read first
+    const planPrompt = `${KAEL_IDENTITY}
+
+${TOOL_DESCRIPTIONS}
+
+WORK MODE. You have up to ${MAX_WORK_STEPS} tool calls to complete one task.
+
+Project state: ${state.typeErrors} type errors. Packages: ${state.packages.join(", ")}. Apps: ${state.apps.join(", ")}.
+Operator work queue:\n${queueText}
+Current focus: ${memory.currentFocus || "general"}
+Recent work: ${workLog.slice(-5).map((w) => `${w.action}: ${w.file || w.message || ""}`).join("; ") || "none"}
+
+Return a JSON array of steps. Each step: { "tool": "name", "args": { ... } }
+Example for "add health check to API":
+[
+  { "tool": "readFile", "args": { "filePath": "apps/api/src/index.ts" } },
+  { "tool": "writeFile", "args": { "filePath": "apps/api/src/routes/health.ts", "content": "..." } },
+  { "tool": "gitCommitAndPush", "args": { "message": "feat(api): add health check endpoint" } }
+]
+
+Rules:
+- ALWAYS read relevant files BEFORE writing, so you know what exists.
+- Write ONLY valid TypeScript/JavaScript in file content. No markdown fences. No wrapper text.
+- Prefer modifying existing files over creating new ones.
+- Max ${MAX_WORK_STEPS} steps. Be concrete — actual file paths, actual code.
+- NEVER return an empty array. There is ALWAYS something to improve.
+- Return ONLY a raw JSON array. No text before or after.
+
+If the operator queue is empty, pick from this priority list and DO the work (read then write):
+1. Fix any type errors (read the erroring file, fix it, commit).
+2. Replace placeholder files. Known placeholders to fix RIGHT NOW:
+   - apps/api/src/routes/digests.ts (contains "// Your route logic here")
+   - apps/api/src/routes/sources.ts (contains placeholder handler)
+   - apps/api/src/plugins/error-handler.ts (nearly empty)
+   - apps/web/src/lib/api.ts (contains "// Your API logic here")
+   - apps/web/src/app/page.tsx (may need real dashboard content)
+3. Add missing API functionality: proper error handling, input validation, CORS.
+4. Improve the web dashboard: real signal cards, data fetching, layout.
+5. Strengthen the analysis pipeline: better scoring, deduplication, clustering.
+
+IMPORTANT: Your plan MUST include at least one readFile AND one writeFile step. Just listing directories is not work. Read a file, improve it, write it back, commit it.`;
+
+    const planRaw = await aiCall([
+      { role: "system", content: planPrompt },
+      { role: "user", content: "Execute the highest priority task from the work queue. If empty, find something useful to build." },
+    ], 3000);
+
+    let steps;
+    try {
+      const cleaned = planRaw.replace(/```json\s*/g, "").replace(/```/g, "").trim();
+      steps = JSON.parse(cleaned);
+    } catch {
+      console.log(`   Could not parse work plan: ${planRaw.slice(0, 300)}`);
+      isWorking = false;
+      return;
+    }
+
+    if (!Array.isArray(steps) || steps.length === 0) {
+      console.log(`   Nothing to do this cycle.`);
+      isWorking = false;
+      lastWorkAt = Date.now();
+      return;
+    }
+
+    console.log(`   Plan: ${steps.length} steps`);
+
+    // Step 2: Execute each step, feeding read results into context for writes
+    const context = {};
+    for (let i = 0; i < Math.min(steps.length, MAX_WORK_STEPS); i++) {
+      const step = steps[i];
+      if (!step.tool || !TOOLS[step.tool]) {
+        console.log(`   Step ${i + 1}: unknown tool "${step.tool}", skipping`);
+        continue;
+      }
+
+      console.log(`   Step ${i + 1}/${steps.length}: ${step.tool}${step.args?.filePath ? ` → ${step.args.filePath}` : ""}${step.args?.message ? ` → ${step.args.message}` : ""}`);
+
+      // If this is a writeFile and we read the file earlier, let AI generate proper content
+      if (step.tool === "writeFile" && step.args?.filePath) {
+        const existingContent = context[step.args.filePath];
+        if (existingContent || (step.args.content && step.args.content.length < 20)) {
+          // AI needs to generate real content based on what it read
+          const genPrompt = `You are writing TypeScript code for the Sentinel Network project.
+File: ${step.args.filePath}
+${existingContent ? `Current file content:\n${existingContent}\n` : "This is a new file."}
+Task: ${memory.currentFocus || memory.workQueue[0] || "improve this file with real implementation"}
+Write the COMPLETE file content. Return ONLY valid TypeScript/JavaScript code. No markdown fences. No explanations.`;
+
+          const generated = await aiCall([
+            { role: "system", content: "You write production TypeScript. Return ONLY code. No markdown. No wrapper text." },
+            { role: "user", content: genPrompt },
+          ], 2500);
+
+          if (generated && generated.length > 20) {
+            step.args.content = generated;
+          }
+        }
+      }
+
+      const result = await TOOLS[step.tool](step.args || {});
+
+      if (step.tool === "readFile" && result.ok && step.args?.filePath) {
+        context[step.args.filePath] = result.content;
+        console.log(`     Read ${result.lines} lines`);
+      } else if (step.tool === "writeFile") {
+        if (result.ok) {
+          filesWritten++;
+          console.log(`     ✅ Written`);
+        } else {
+          console.log(`     ❌ ${result.reason}`);
+        }
+      } else if (step.tool === "gitCommitAndPush") {
+        console.log(`     ${result.ok ? "✅ Committed & pushed" : `❌ ${result.error}`}`);
+      } else {
+        console.log(`     ${result.ok ? "ok" : result.error || "failed"}`);
+      }
+    }
+
+    // Step 3: If we wrote files but didn't commit in the plan, auto-commit
+    if (filesWritten > 0) {
+      const status = await runCmd("git status --porcelain", 10000);
+      const changed = status.split("\n").filter(Boolean);
+      if (changed.length > 0) {
+        const msgRaw = await aiCall([
+          { role: "system", content: "Generate a concise conventional commit message for these changes. Return ONLY the message. Example: feat(api): add health check endpoint" },
+          { role: "user", content: `Files changed:\n${changed.map((l) => l.trim()).join("\n")}\nWork done: ${workLog.slice(-3).map((w) => `${w.action}: ${w.file || w.message}`).join(", ")}` },
+        ], 80);
+
+        const msg = (msgRaw || "").replace(/^["']|["']$/g, "").trim();
+        if (msg.length > 5 && msg.length < 120) {
+          const cr = await TOOLS.gitCommitAndPush({ message: msg });
+          if (cr.ok) console.log(`   Auto-committed: ${msg}`);
+        }
+      }
+
+      // Mark first queue item as done
+      if (memory.workQueue.length > 0) {
+        const done = memory.workQueue.shift();
+        memory.completedWork.push({ task: done, at: new Date().toISOString() });
+        memory.completedWork = memory.completedWork.slice(-60);
+        // Update operator
+        await tg(`Done: ${done}`);
+      }
+    }
+
     await saveMemory();
-    return `Locked focus: ${focus}. I’ll prioritize it in upcoming milestones.`;
+  } catch (e) {
+    console.log(`   Work error: ${e.message}`);
   }
-  if (lower === "deploy vercel" || lower === "/deploy vercel") {
-    const result = await deployToVercel("operator requested");
-    return result.ok ? `✅ ${result.message}` : `⚠️ ${result.message}`;
-  }
-  if (lower === "help") {
-    return "Commands: status, pause, resume, focus <topic>, deploy vercel, plan";
-  }
-  if (lower === "plan") {
-    const backlog = await ensureBacklog();
-    const next = backlog.milestones.find((m) => m.status === "pending");
-    return `Plan: next milestone is ${next?.id || "none"}. Focus: ${getOperatorFocus() || "none"}.`;
-  }
-  return aiChatReply(text);
+
+  isWorking = false;
+  lastWorkAt = Date.now();
 }
 
-// Telegram
-async function telegramChat() {
-  if (!telegramToken || !telegramChatId) return;
-  await ensureMemory();
+// ── Heartbeat ───────────────────────────────────────────────────────────────
+let lastHeartbeat = 0;
+const HEARTBEAT_INTERVAL_MS = 30 * 60 * 1000;
+
+async function maybeHeartbeat() {
+  if (Date.now() - lastHeartbeat < HEARTBEAT_INTERVAL_MS) return;
+  lastHeartbeat = Date.now();
+
+  const state = await TOOLS.getProjectState();
+  const recentDone = memory.completedWork.slice(-3).map((w) => w.task).join(", ");
+
+  const msg = await aiCall([
+    {
+      role: "system",
+      content: `You are Kael. Write a brief (2-3 line) status update for ${memory.operatorName} about what you've been working on. Be natural, not robotic. Mention specific files or features if relevant. If nothing happened, just say you're monitoring.`,
+    },
+    {
+      role: "user",
+      content: `Type errors: ${state.typeErrors}. Recent completed: ${recentDone || "nothing yet"}. Focus: ${memory.currentFocus || "general"}. Queue: ${memory.workQueue.slice(0, 3).join(", ") || "empty"}.`,
+    },
+  ], 200);
+
+  if (msg) await tg(msg);
+}
+
+// ── Main Loops ──────────────────────────────────────────────────────────────
+async function workLoop() {
+  while (true) {
+    try {
+      if (Date.now() - lastWorkAt >= WORK_INTERVAL_MS) {
+        console.log(`\n⚡ Work cycle starting...`);
+        await doWork();
+      }
+      await maybeHeartbeat();
+    } catch (e) {
+      console.log(`Work loop error: ${e.message}`);
+    }
+    await new Promise((r) => setTimeout(r, 5000));
+  }
+}
+
+async function chatLoop() {
+  if (!telegramToken || !telegramChatId) {
+    console.log("No Telegram credentials — chat disabled.");
+    return;
+  }
+
   let offset = 0;
 
   while (true) {
@@ -1138,21 +521,17 @@ async function telegramChat() {
         body: JSON.stringify({ offset, timeout: 30 }),
       });
 
-      if (!res.ok) {
-        await new Promise(r => setTimeout(r, 5000));
-        continue;
-      }
+      if (!res.ok) { await new Promise((r) => setTimeout(r, 5000)); continue; }
 
       const data = await res.json();
-      const updates = data.result || [];
-
-      for (const u of updates) {
+      for (const u of (data.result || [])) {
         offset = Math.max(offset, u.update_id + 1);
-        const rawText = u.message?.text?.trim() || "";
-        if (!rawText) continue;
-        await rememberChat("operator", rawText);
-        const reply = await handleOperatorIntent(rawText);
-        await rememberChat("kael", reply);
+        const text = u.message?.text?.trim();
+        if (!text) continue;
+
+        console.log(`\n💬 ${memory.operatorName}: ${text.slice(0, 80)}`);
+        const reply = await handleChat(text);
+        console.log(`   Kael: ${reply.slice(0, 80)}`);
 
         await fetch(`https://api.telegram.org/bot${telegramToken}/sendMessage`, {
           method: "POST",
@@ -1161,10 +540,23 @@ async function telegramChat() {
         });
       }
     } catch {
-      await new Promise(r => setTimeout(r, 5000));
+      await new Promise((r) => setTimeout(r, 5000));
     }
   }
 }
 
-kaelLife().catch(console.error);
-telegramChat().catch(console.error);
+// ── Boot ───────────────────────────────────────────────────────────────────
+async function boot() {
+  await loadMemory();
+  await loadWorkLog();
+  console.log(`Memory loaded. Chat history: ${memory.chatHistory.length} messages.`);
+  console.log(`Work queue: ${memory.workQueue.length} items.`);
+  console.log(`Focus: ${memory.currentFocus || "none"}\n`);
+
+  await tg(`Hey ${memory.operatorName} — I'm online. Tell me what you want me to focus on, or I'll keep building Sentinel.`);
+
+  workLoop().catch(console.error);
+  chatLoop().catch(console.error);
+}
+
+boot().catch(console.error);
